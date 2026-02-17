@@ -55,7 +55,8 @@ Automated dependency setup (Windows PowerShell):
 
 ## Controls (Current Demo)
 
-- `W A S D` or arrow keys: move character (collision-resolved)
+- `A D` or left/right arrows: move character
+- `Space`, `W`, or up arrow: jump
 - `R`: reload scene and collision data from disk
 - `F3`: toggle debug overlay
 - `F4`: toggle collision grid debug draw

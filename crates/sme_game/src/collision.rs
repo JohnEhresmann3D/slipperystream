@@ -35,6 +35,16 @@ pub struct Aabb {
     pub half_h: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CollisionMoveResult {
+    pub aabb: Aabb,
+    pub collided_y: bool,
+    pub blocked_left: bool,
+    pub blocked_right: bool,
+    pub blocked_down: bool,
+    pub blocked_up: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CollisionGrid {
     pub version: String,
@@ -71,10 +81,38 @@ impl CollisionGrid {
         self.solids.iter()
     }
 
-    pub fn move_and_collide(&self, mut aabb: Aabb, dx: f32, dy: f32) -> Aabb {
-        aabb.center_x = self.resolve_axis_x(aabb, dx);
-        aabb.center_y = self.resolve_axis_y(aabb, dy);
-        aabb
+    #[allow(dead_code)]
+    pub fn move_and_collide(&self, aabb: Aabb, dx: f32, dy: f32) -> Aabb {
+        self.move_and_collide_detailed(aabb, dx, dy).aabb
+    }
+
+    pub fn move_and_collide_detailed(&self, aabb: Aabb, dx: f32, dy: f32) -> CollisionMoveResult {
+        const EPS: f32 = 0.0001;
+
+        let resolved_x = self.resolve_axis_x(aabb, dx);
+        let x_expected = aabb.center_x + dx;
+        let collided_x = (resolved_x - x_expected).abs() > EPS;
+
+        let mut moved = aabb;
+        moved.center_x = resolved_x;
+        let resolved_y = self.resolve_axis_y(moved, dy);
+        let y_expected = aabb.center_y + dy;
+        let collided_y = (resolved_y - y_expected).abs() > EPS;
+        moved.center_y = resolved_y;
+
+        let blocked_left = collided_x && dx < 0.0;
+        let blocked_right = collided_x && dx > 0.0;
+        let blocked_down = collided_y && dy < 0.0;
+        let blocked_up = collided_y && dy > 0.0;
+
+        CollisionMoveResult {
+            aabb: moved,
+            collided_y,
+            blocked_left,
+            blocked_right,
+            blocked_down,
+            blocked_up,
+        }
     }
 
     fn resolve_axis_x(&self, aabb: Aabb, dx: f32) -> f32 {
@@ -336,5 +374,30 @@ mod tests {
             moved.center_y >= start.center_y - 0.0001,
             "Moving up should never push the character downward"
         );
+    }
+
+    #[test]
+    fn move_and_collide_detailed_sets_blocked_direction_flags() {
+        let grid = CollisionGrid::from_file(CollisionFile {
+            version: "0.1".to_string(),
+            collision_id: "test".to_string(),
+            cell_size: 32,
+            origin: GridOrigin { x: 0, y: 0 },
+            width: 8,
+            height: 8,
+            solids: vec![GridCell { x: 2, y: 1 }],
+        });
+
+        let start = Aabb {
+            center_x: 32.0 + 8.0,
+            center_y: 32.0 + 8.0,
+            half_w: 8.0,
+            half_h: 8.0,
+        };
+
+        let moved = grid.move_and_collide_detailed(start, 40.0, 0.0);
+        assert!(moved.blocked_right);
+        assert!(!moved.blocked_left);
+        assert!(!moved.collided_y);
     }
 }

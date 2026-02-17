@@ -24,11 +24,20 @@ const COLLISION_PATH: &str = "assets/collision/m3_collision.json";
 const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/test_sprite.png");
 const DEBUG_WHITE_ASSET: &str = "__debug_white";
 const PLAYER_ASSET: &str = "__player";
-const PLAYER_SPEED: f32 = 160.0;
+const PLAYER_MAX_SPEED: f32 = 180.0;
+const PLAYER_ACCEL_GROUND: f32 = 1600.0;
+const PLAYER_ACCEL_AIR: f32 = 900.0;
+const PLAYER_FRICTION_GROUND: f32 = 2000.0;
+const PLAYER_GRAVITY: f32 = -1800.0;
+const PLAYER_MAX_FALL_SPEED: f32 = -900.0;
+const PLAYER_JUMP_SPEED: f32 = 620.0;
 
 #[derive(Debug, Clone, Copy)]
 struct CharacterController {
     aabb: Aabb,
+    velocity_x: f32,
+    velocity_y: f32,
+    grounded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +121,9 @@ impl EngineState {
                 half_w: cell_world * 0.35,
                 half_h: cell_world * 0.45,
             },
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            grounded: false,
         };
 
         let camera_uniform = camera.build_uniform();
@@ -547,32 +559,69 @@ impl ApplicationHandler for App {
 
                     let dt = state.time.fixed_dt as f32;
                     let mut move_x: f32 = 0.0;
-                    let mut move_y: f32 = 0.0;
                     if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
                         move_x -= 1.0;
                     }
                     if state.input.is_held(Key::Right) || state.input.is_held(Key::D) {
                         move_x += 1.0;
                     }
-                    if state.input.is_held(Key::Up) || state.input.is_held(Key::W) {
-                        move_y += 1.0;
-                    }
-                    if state.input.is_held(Key::Down) || state.input.is_held(Key::S) {
-                        move_y -= 1.0;
+
+                    let accel = if state.character.grounded {
+                        PLAYER_ACCEL_GROUND
+                    } else {
+                        PLAYER_ACCEL_AIR
+                    };
+                    if move_x != 0.0 {
+                        let target = move_x * PLAYER_MAX_SPEED;
+                        state.character.velocity_x =
+                            move_towards(state.character.velocity_x, target, accel * dt);
+                    } else if state.character.grounded {
+                        state.character.velocity_x = move_towards(
+                            state.character.velocity_x,
+                            0.0,
+                            PLAYER_FRICTION_GROUND * dt,
+                        );
                     }
 
-                    if move_x != 0.0 || move_y != 0.0 {
-                        let len = (move_x * move_x + move_y * move_y).sqrt();
-                        move_x /= len;
-                        move_y /= len;
+                    if (state.input.is_just_pressed(Key::Space)
+                        || state.input.is_just_pressed(Key::W)
+                        || state.input.is_just_pressed(Key::Up))
+                        && state.character.grounded
+                    {
+                        state.character.velocity_y = PLAYER_JUMP_SPEED;
+                        state.character.grounded = false;
                     }
 
-                    let dx = move_x * PLAYER_SPEED * dt;
-                    let dy = move_y * PLAYER_SPEED * dt;
-                    state.character.aabb =
-                        state
-                            .collision_grid
-                            .move_and_collide(state.character.aabb, dx, dy);
+                    state.character.velocity_y = (state.character.velocity_y + PLAYER_GRAVITY * dt)
+                        .max(PLAYER_MAX_FALL_SPEED);
+
+                    let dx = state.character.velocity_x * dt;
+                    let dy = state.character.velocity_y * dt;
+                    let result = state.collision_grid.move_and_collide_detailed(
+                        state.character.aabb,
+                        dx,
+                        dy,
+                    );
+                    state.character.aabb = result.aabb;
+
+                    if (result.blocked_left && state.character.velocity_x < 0.0)
+                        || (result.blocked_right && state.character.velocity_x > 0.0)
+                    {
+                        state.character.velocity_x = 0.0;
+                    }
+                    if result.blocked_up && state.character.velocity_y > 0.0 {
+                        state.character.velocity_y = 0.0;
+                    }
+                    if result.blocked_down && state.character.velocity_y < 0.0 {
+                        state.character.velocity_y = 0.0;
+                        state.character.grounded = true;
+                    } else if result.collided_y {
+                        state.character.velocity_y = 0.0;
+                        state.character.grounded = false;
+                    } else {
+                        state.character.grounded = false;
+                    }
+
                     state.camera.position.x = state.character.aabb.center_x;
                     state.camera.position.y = state.character.aabb.center_y;
                 }
@@ -707,6 +756,16 @@ fn create_index_buffer(device: &wgpu::Device, index_capacity: usize) -> wgpu::Bu
         usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+fn move_towards(current: f32, target: f32, max_delta: f32) -> f32 {
+    if (target - current).abs() <= max_delta {
+        target
+    } else if target > current {
+        current + max_delta
+    } else {
+        current - max_delta
+    }
 }
 
 fn add_quad(

@@ -88,6 +88,29 @@ Deferred:
 - Debug collision visualization
 - Optional vector colliders (if low-risk)
 
+### 3.5.1 Physics Baseline (v0.1)
+
+In scope for v0.1 (M3):
+
+- Deterministic fixed-step kinematic movement (`input -> desired motion -> collision-resolved motion`)
+- Axis-separable AABB move-and-slide against collision underlay
+- Collision query helpers needed for controller behavior (blocked axis, overlap checks)
+- Stable player motion at 60 Hz fixed timestep (no tunneling in normal play speeds)
+- Debug visualization for collision cells and character bounds
+
+Out of scope for v0.1:
+
+- General-purpose rigid body simulation
+- Stacks/constraints/joints
+- Continuous collision detection for arbitrary high-speed bodies
+- Advanced materials (mass, restitution, friction coefficients)
+- Fully generalized slope/step solver
+
+Ownership split:
+
+- Engine owns deterministic collision/movement primitives.
+- Game code owns movement feel tuning (accel/decel, jump arcs, coyote time, abilities).
+
 ### 3.6 Hot Reload
 
 Must support:
