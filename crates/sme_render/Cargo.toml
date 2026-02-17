@@ -1,0 +1,15 @@
+[package]
+name = "sme_render"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+sme_platform = { path = "../sme_platform" }
+winit = { workspace = true }
+wgpu = { workspace = true }
+image = { workspace = true }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+pollster = { workspace = true }
+log = { workspace = true }

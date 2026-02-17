@@ -1,0 +1,21 @@
+[package]
+name = "sme_game"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[[bin]]
+name = "sme_game"
+path = "src/main.rs"
+
+[dependencies]
+sme_platform = { path = "../sme_platform" }
+sme_core = { path = "../sme_core" }
+sme_render = { path = "../sme_render" }
+sme_devtools = { path = "../sme_devtools" }
+winit = { workspace = true }
+wgpu = { workspace = true }
+egui-wgpu = { workspace = true }
+bytemuck = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }

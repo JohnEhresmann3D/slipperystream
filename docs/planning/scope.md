@@ -1,0 +1,267 @@
+﻿# SCOPE_v0.1.md
+
+## Saturday Morning Engine (2D/2.5D) - v0.1 Scope
+
+Status: LOCKED unless explicitly reopened.
+
+---
+
+## 1. v0.1 Goal
+
+Deliver a playable vertical slice that proves engine identity.
+
+Must demonstrate:
+
+- Layered sprite scene (parallax + foreground occlusion)
+- Deterministic fixed-timestep movement
+- Collision underlay (grid-based, optional vector refinement)
+- Texture atlas batching
+- Debug overlay with measurable stats
+- Hot reload for atlas + scene + collision
+- Tier toggles (Mobile-safe baseline + PC polish tier)
+
+Success Criteria:
+The engine produces a distinct "Saturday morning" feel within 30 seconds of running.
+
+---
+
+## 2. Target Platforms
+
+Primary:
+
+- Windows PC
+
+Design Constraint:
+
+- Must run within mobile-safe performance budgets (even if mobile build is not shipped in v0.1)
+
+Deferred:
+
+- iOS / Android runtime builds
+- Console targets
+- Cloud deployment (architecture must not block it)
+
+---
+
+## 3. Runtime Features - In Scope
+
+### 3.1 Platform Layer
+
+- Window creation
+- Event loop
+- Keyboard + mouse input
+- Basic gamepad support
+- Minimal audio playback
+- File I/O abstraction
+
+### 3.2 Simulation
+
+- Fixed timestep (60 Hz default)
+- Deterministic input sampling
+- Explicit update loop
+- Pause and single-step debug control
+
+### 3.3 Rendering
+
+- Sprite renderer with batching
+- Texture atlas support
+- Orthographic camera
+- Scene Layers:
+  - Ordered layers
+  - Parallax factor
+  - Sort modes (None, Y-sort)
+  - Foreground occlusion layer
+- Debug draw primitives (lines, rects)
+- Debug text rendering (bitmap font acceptable)
+
+### 3.4 Scene System
+
+- Scene loader (JSON or compact engine format)
+- Layer definitions
+- Sprite instance definitions
+- Entity IDs
+
+### 3.5 Collision Underlay
+
+- Grid-based collision map
+- AABB collision response
+- Debug collision visualization
+- Optional vector colliders (if low-risk)
+
+### 3.6 Hot Reload
+
+Must support:
+
+- Atlas reload
+- Scene reload
+- Collision reload
+
+Rules:
+
+- Reload only at safe frame boundaries
+- No partial corrupted states
+- Reload may reset current scene safely
+
+### 3.7 Debug & Profiling
+
+Overlay must display:
+
+- FPS
+- Frame time (ms)
+- Fixed timestep stats
+- Draw calls
+- Sprite count
+- Atlas binds
+- Basic memory usage estimate
+
+---
+
+## 4. Tooling - In Scope
+
+### 4.1 Texture Atlas Packer
+
+- Packs sprites into atlas textures
+- Outputs metadata with stable IDs
+- Emits consistent UV mappings
+- Generates versioned output
+
+### 4.2 Scene Authoring
+
+- External JSON workflow acceptable
+- Manual editing acceptable
+- Minimal internal editor only if trivial
+
+---
+
+## 5. Out of Scope (v0.1)
+
+- General-purpose editor suite
+- Multiplayer / networking
+- Scripting runtime (Lua, etc.)
+- Advanced physics engine
+- Full 3D mesh pipeline
+- Skeletal animation system
+- Multi-render-backend abstraction
+- Plugin ecosystem
+- Save/load persistence beyond scene reload
+- UI framework beyond debug tools
+
+---
+
+## 6. Fidelity Tiers
+
+Tier 0 (Mobile-Safe Baseline):
+
+- No dynamic lighting
+- Minimal particles
+- No heavy post-processing
+
+Tier 2 (PC Polish):
+
+- Optional stylized lighting pass
+- Optional bloom or rim-light
+- Increased particle counts
+
+Tier changes must never affect simulation or determinism.
+
+---
+
+## 7. Deliverables Checklist
+
+- Builds and runs on Windows
+- Demonstrates layered sprite scene
+- Character moves and collides deterministically
+- Debug overlay functional
+- Hot reload stable
+- Tier toggles functional
+- One command builds and runs sample
+
+---
+
+## 8. Milestones
+
+M1 - Core loop + sprite rendering + debug overlay  
+M2 - Scene layers + parallax + occlusion  
+M3 - Collision underlay + character controller  
+M4 - Atlas packer + stable asset IDs  
+M5 - Hot reload + tier toggles + polish pass
+
+### M2: Scene Layers + Parallax + Occlusion
+
+Goal: Prove the sprite-scene-first authoring model with layered illustration.
+
+Acceptance Criteria:
+
+- Scene loads from a JSON file
+- 3+ layers (background, mid, foreground) with independent parallax factors
+- Foreground layer acts as occlusion mask (draws in front)
+- Camera movement demonstrates parallax effect
+- Layers support Y-sort mode (sprites sort by Y position)
+- Scene can be reloaded at runtime (hot reload foundation)
+
+Key Deliverables:
+
+1. Scene JSON schema - define layer + sprite instance format
+2. Scene loader - parse JSON, build layer hierarchy
+3. Layer renderer - ordered draw with parallax transform
+4. Sample scene - JSON with 3 layers and 5+ sprites
+5. Y-sort - optional per-layer sorting by Y position
+6. Hot reload foundation - file watcher + reload trigger
+
+Pre-requisite:
+
+The scene JSON schema must be defined before coding starts in `docs/planning/asset_formats_v0.1.md`.
+
+Risk:
+
+- Soft dependency on M4 (atlas packer) - can use individual PNG files as placeholders
+- Hot reload here is simple; full hot reload is M5
+
+---
+
+## 9. M2 Execution Plan
+
+### Phase 0 - Spec Lock
+
+- Finalize scene JSON schema in `docs/planning/asset_formats_v0.1.md`
+- Confirm optional/required fields and default values
+- Add one canonical sample JSON file that matches schema
+
+### Phase 1 - Loader
+
+- Implement parser and validation (JSON -> in-memory scene)
+- Surface clear validation errors (file path + field name)
+- Load 3-layer scene with placeholder PNG references
+
+### Phase 2 - Rendering Behavior
+
+- Render layers in deterministic order
+- Apply per-layer parallax against camera movement
+- Implement optional per-layer Y-sort for sprite instances
+- Verify foreground occlusion layer draws after gameplay sprite layer
+
+### Phase 3 - Hot Reload Foundation
+
+- Add file watch trigger for scene file changes
+- Reload at safe frame boundary only
+- On parse failure, keep previous valid scene loaded and report error
+
+### Definition of Done
+
+- All M2 acceptance criteria pass in a sample scene
+- Scene loader + renderer paths are covered by at least smoke tests
+- Team can iterate on scene JSON without engine restart
+
+### Failure Modes to Watch
+
+- Layer ordering regressions after Y-sort enabled
+- Camera/parallax mismatch from incorrect transform space
+- Hot reload applying partial invalid state
+
+### Validation Steps
+
+1. Move camera through sample scene and verify depth illusion visually
+2. Toggle Y-sort on/off per layer and confirm expected ordering changes
+3. Edit scene JSON while running and confirm safe reload behavior
+4. Force invalid JSON and confirm rollback to last valid scene
+

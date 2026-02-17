@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sme_platform",
+    "crates/sme_core",
+    "crates/sme_render",
+    "crates/sme_devtools",
+    "crates/sme_game",
+]
+
+[workspace.package]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+winit = "0.30"
+wgpu = { version = "24", features = ["wgsl", "dx12"] }
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+glam = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+log = "0.4"
+env_logger = "0.11"

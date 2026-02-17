@@ -1,0 +1,9 @@
+[package]
+name = "sme_core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+log = { workspace = true }
+glam = { workspace = true }
