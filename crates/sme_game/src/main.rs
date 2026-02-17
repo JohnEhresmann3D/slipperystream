@@ -40,6 +40,15 @@ struct DrawCall {
     index_count: u32,
 }
 
+struct QuadSpec<'a> {
+    texture_key: &'a str,
+    center_x: f32,
+    center_y: f32,
+    width: f32,
+    height: f32,
+    color: [f32; 4],
+}
+
 struct GpuSpriteTexture {
     texture: Texture,
     bind_group: wgpu::BindGroup,
@@ -75,7 +84,6 @@ struct EngineState {
     mesh_index_capacity: usize,
     draw_calls: Vec<DrawCall>,
     sprite_count: usize,
-    atlas_bind_count: usize,
 }
 
 impl EngineState {
@@ -131,6 +139,17 @@ impl EngineState {
                 scene_path.display(),
                 err
             );
+        }
+        if let Some(registry) = atlas_registry.as_ref() {
+            if let Err(err) =
+                preflight_atlas_textures(&gpu.device, &gpu.queue, &sprite_pipeline, registry)
+            {
+                panic!(
+                    "Initial atlas '{}' failed texture preflight: {}",
+                    atlas_path.display(),
+                    err
+                );
+            }
         }
 
         let mut camera = Camera2D::new(gpu.size.0, gpu.size.1);
@@ -188,7 +207,6 @@ impl EngineState {
             mesh_index_capacity: 0,
             draw_calls: Vec::new(),
             sprite_count: 0,
-            atlas_bind_count: 0,
         };
 
         // Startup order matters: load textures before building the first mesh.
@@ -250,6 +268,15 @@ impl EngineState {
                 if let Err(err) =
                     validate_scene_sprite_references(&self.scene, Some(&registry_candidate))
                 {
+                    log::error!("Atlas reload failed ({reason}): {err}");
+                    return;
+                }
+                if let Err(err) = preflight_atlas_textures(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &self.sprite_pipeline,
+                    &registry_candidate,
+                ) {
                     log::error!("Atlas reload failed ({reason}): {err}");
                     return;
                 }
@@ -497,12 +524,14 @@ impl EngineState {
                     &mut vertices,
                     &mut indices,
                     &mut draw_calls,
-                    DEBUG_WHITE_ASSET,
-                    center_x,
-                    center_y,
-                    cell,
-                    cell,
-                    [0.15, 0.9, 0.15, 0.35],
+                    QuadSpec {
+                        texture_key: DEBUG_WHITE_ASSET,
+                        center_x,
+                        center_y,
+                        width: cell,
+                        height: cell,
+                        color: [0.15, 0.9, 0.15, 0.35],
+                    },
                 );
             }
         }
@@ -512,12 +541,14 @@ impl EngineState {
             &mut vertices,
             &mut indices,
             &mut draw_calls,
-            PLAYER_ASSET,
-            self.character.aabb.center_x,
-            self.character.aabb.center_y,
-            self.character.aabb.half_w * 2.0,
-            self.character.aabb.half_h * 2.0,
-            [1.0, 0.3, 0.3, 0.9],
+            QuadSpec {
+                texture_key: PLAYER_ASSET,
+                center_x: self.character.aabb.center_x,
+                center_y: self.character.aabb.center_y,
+                width: self.character.aabb.half_w * 2.0,
+                height: self.character.aabb.half_h * 2.0,
+                color: [1.0, 0.3, 0.3, 0.9],
+            },
         );
 
         (vertices, indices, draw_calls)
@@ -705,12 +736,13 @@ impl ApplicationHandler for App {
                     return;
                 };
 
+                let predicted_bind_count = count_texture_binds(&state.draw_calls);
                 let (egui_primitives, egui_textures_delta) = state.debug_overlay.prepare(
                     &state.window,
                     &state.time,
                     Some(OverlayStats {
                         draw_calls: state.draw_calls.len() as u32,
-                        atlas_binds: state.atlas_bind_count as u32,
+                        atlas_binds: predicted_bind_count as u32,
                         sprite_count: state.sprite_count as u32,
                     }),
                 );
@@ -728,7 +760,6 @@ impl ApplicationHandler for App {
                         });
 
                 {
-                    let mut atlas_bind_count = 0usize;
                     let mut last_bound_texture_key: Option<&str> = None;
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Scene Render Pass"),
@@ -760,7 +791,6 @@ impl ApplicationHandler for App {
                             if last_bound_texture_key != Some(draw.texture_key.as_str()) {
                                 render_pass.set_bind_group(1, &texture.bind_group, &[]);
                                 last_bound_texture_key = Some(draw.texture_key.as_str());
-                                atlas_bind_count += 1;
                             }
                             render_pass.draw_indexed(
                                 draw.index_start..(draw.index_start + draw.index_count),
@@ -769,7 +799,6 @@ impl ApplicationHandler for App {
                             );
                         }
                     }
-                    state.atlas_bind_count = atlas_bind_count;
                 }
 
                 state.debug_overlay.upload(
@@ -839,36 +868,31 @@ fn add_quad(
     vertices: &mut Vec<SpriteVertex>,
     indices: &mut Vec<u32>,
     draw_calls: &mut Vec<DrawCall>,
-    asset: &str,
-    center_x: f32,
-    center_y: f32,
-    width: f32,
-    height: f32,
-    color: [f32; 4],
+    spec: QuadSpec<'_>,
 ) {
-    let half_w = width * 0.5;
-    let half_h = height * 0.5;
+    let half_w = spec.width * 0.5;
+    let half_h = spec.height * 0.5;
     let base_index = vertices.len() as u32;
 
     vertices.push(SpriteVertex {
-        position: [center_x - half_w, center_y - half_h],
+        position: [spec.center_x - half_w, spec.center_y - half_h],
         tex_coords: [0.0, 1.0],
-        color,
+        color: spec.color,
     });
     vertices.push(SpriteVertex {
-        position: [center_x + half_w, center_y - half_h],
+        position: [spec.center_x + half_w, spec.center_y - half_h],
         tex_coords: [1.0, 1.0],
-        color,
+        color: spec.color,
     });
     vertices.push(SpriteVertex {
-        position: [center_x + half_w, center_y + half_h],
+        position: [spec.center_x + half_w, spec.center_y + half_h],
         tex_coords: [1.0, 0.0],
-        color,
+        color: spec.color,
     });
     vertices.push(SpriteVertex {
-        position: [center_x - half_w, center_y + half_h],
+        position: [spec.center_x - half_w, spec.center_y + half_h],
         tex_coords: [0.0, 0.0],
-        color,
+        color: spec.color,
     });
 
     let draw_start = indices.len() as u32;
@@ -881,7 +905,7 @@ fn add_quad(
         base_index + 3,
     ]);
 
-    push_draw_call(draw_calls, asset, draw_start, 6);
+    push_draw_call(draw_calls, spec.texture_key, draw_start, 6);
 }
 
 fn push_draw_call(
@@ -924,6 +948,50 @@ fn load_texture_asset(
         texture,
         bind_group,
     }
+}
+
+fn load_texture_asset_strict(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &SpritePipeline,
+    asset_path: &str,
+) -> Result<GpuSpriteTexture, String> {
+    let bytes = std::fs::read(asset_path)
+        .map_err(|e| format!("Failed to read texture '{}': {e}", asset_path))?;
+    let texture = Texture::from_bytes(device, queue, &bytes, asset_path);
+    let bind_group = pipeline.create_texture_bind_group(device, &texture);
+    Ok(GpuSpriteTexture {
+        texture,
+        bind_group,
+    })
+}
+
+fn preflight_atlas_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &SpritePipeline,
+    atlas_registry: &AtlasRegistry,
+) -> Result<(), String> {
+    let mut required_textures = std::collections::HashSet::new();
+    for entry in atlas_registry.sprite_entries.values() {
+        required_textures.insert(entry.texture_path.as_str());
+    }
+    for texture_path in required_textures {
+        let _ = load_texture_asset_strict(device, queue, pipeline, texture_path)?;
+    }
+    Ok(())
+}
+
+fn count_texture_binds(draw_calls: &[DrawCall]) -> usize {
+    let mut binds = 0usize;
+    let mut current: Option<&str> = None;
+    for draw in draw_calls {
+        if current != Some(draw.texture_key.as_str()) {
+            current = Some(draw.texture_key.as_str());
+            binds += 1;
+        }
+    }
+    binds
 }
 
 fn map_key(key_code: KeyCode) -> Option<Key> {
