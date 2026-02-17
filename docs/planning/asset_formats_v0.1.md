@@ -132,9 +132,81 @@ Purpose: Author layered sprite scenes with parallax, optional Y-sort, and occlus
 
 ---
 
-## 2. Collision Data Format (M3 Placeholder)
+## 2. Collision Data Format (M3 Required)
 
-Reserved for M3 finalization.
+Purpose: Define gameplay-truth collision independent from scene rendering layers.
+
+### 2.1 Top-Level Shape
+
+```json
+{
+  "version": "0.1",
+  "collision_id": "m3_demo_collision",
+  "cell_size": 32,
+  "origin": { "x": 0, "y": 0 },
+  "width": 20,
+  "height": 12,
+  "solids": []
+}
+```
+
+### 2.2 Field Definitions
+
+- `version` (string, required): Schema version. Must be `0.1`.
+- `collision_id` (string, required): Stable identifier for the collision data.
+- `cell_size` (integer, required): Cell dimension in world units/pixels.
+- `origin` (object, optional, default `{ "x": 0, "y": 0 }`):
+  - `x` (integer, required)
+  - `y` (integer, required)
+- `width` (integer, required): Number of columns.
+- `height` (integer, required): Number of rows.
+- `solids` (array, required): Solid cell coordinates in grid space.
+
+### 2.3 Solid Cell Shape
+
+```json
+{ "x": 4, "y": 7 }
+```
+
+- `x` (integer, required): Column index in `0..width-1`.
+- `y` (integer, required): Row index in `0..height-1`.
+
+### 2.4 Coordinate Convention
+
+- Grid origin `(0, 0)` is the bottom-left logical cell.
+- World position of a cell is:
+  - `world_x = origin.x + x * cell_size`
+  - `world_y = origin.y + y * cell_size`
+- Cells outside bounds are treated as non-solid unless explicitly configured otherwise.
+
+### 2.5 Validation Rules
+
+- `width > 0`, `height > 0`, and `cell_size > 0`.
+- Every solid entry must be inside declared bounds.
+- Duplicate solid entries are invalid and should fail load.
+- Unknown fields are ignored in v0.1, but warn in debug logs.
+
+### 2.6 Canonical M3 Example
+
+```json
+{
+  "version": "0.1",
+  "collision_id": "m3_demo_collision",
+  "cell_size": 32,
+  "origin": { "x": -320, "y": -192 },
+  "width": 20,
+  "height": 12,
+  "solids": [
+    { "x": 0, "y": 0 }, { "x": 1, "y": 0 }, { "x": 2, "y": 0 }, { "x": 3, "y": 0 },
+    { "x": 4, "y": 0 }, { "x": 5, "y": 0 }, { "x": 6, "y": 0 }, { "x": 7, "y": 0 },
+    { "x": 8, "y": 0 }, { "x": 9, "y": 0 }, { "x": 10, "y": 0 }, { "x": 11, "y": 0 },
+    { "x": 12, "y": 0 }, { "x": 13, "y": 0 }, { "x": 14, "y": 0 }, { "x": 15, "y": 0 },
+    { "x": 16, "y": 0 }, { "x": 17, "y": 0 }, { "x": 18, "y": 0 }, { "x": 19, "y": 0 },
+    { "x": 6, "y": 1 }, { "x": 6, "y": 2 }, { "x": 6, "y": 3 },
+    { "x": 13, "y": 1 }, { "x": 13, "y": 2 }
+  ]
+}
+```
 
 ---
 

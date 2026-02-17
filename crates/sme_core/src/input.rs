@@ -9,6 +9,7 @@ pub enum Key {
     Escape,
     Space,
     F3,
+    F4,
     W,
     A,
     S,

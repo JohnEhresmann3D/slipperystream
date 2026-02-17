@@ -265,3 +265,84 @@ Risk:
 3. Edit scene JSON while running and confirm safe reload behavior
 4. Force invalid JSON and confirm rollback to last valid scene
 
+---
+
+### M3: Collision Underlay + Character Controller
+
+Goal: Prove deterministic gameplay simulation with collision truth separate from visuals.
+
+Acceptance Criteria:
+
+- Collision grid loads from file
+- Character AABB collides with grid cells
+- Character moves with keyboard input with deterministic response at fixed timestep
+- Collision debug visualization draws solid cells and character bounds
+- No obvious tunneling or jitter at 60 Hz fixed timestep
+- Collision state remains independent of render layering/parallax
+
+Key Deliverables:
+
+1. Collision grid data format - define schema in `docs/planning/asset_formats_v0.1.md`
+2. Collision loader - parse grid into runtime collision map
+3. Collision query + resolve - AABB move-and-slide against grid cells
+4. Character controller - input -> desired velocity -> collision-resolved movement
+5. Debug draw - collision cells + player AABB overlay
+6. Sample collision file - author one grid matching current sample scene scale
+
+Pre-requisite:
+
+Collision file format must be finalized in `docs/planning/asset_formats_v0.1.md` before implementation starts.
+
+Risk:
+
+- Collision tuning can consume time (corner jitter, edge sticking, penetration correction)
+- Determinism regressions if movement uses variable delta time paths
+- Optional vector collider overlay should be deferred if it threatens M3 timeline
+
+---
+
+## 10. M3 Execution Plan
+
+### Phase 0 - Collision Spec Lock
+
+- Finalize collision grid schema and coordinate conventions
+- Decide cell size and origin convention relative to world units
+- Add canonical sample file and loader validation rules
+
+### Phase 1 - Collision Runtime Core
+
+- Implement collision grid storage and solid-cell query
+- Implement AABB sweep/resolve with axis-separable move-and-slide
+- Add deterministic movement update at fixed timestep only
+
+### Phase 2 - Character Controller
+
+- Add input-driven character motor (walk only for M3)
+- Resolve motion against collision grid each fixed step
+- Clamp/normalize movement so diagonal speed is stable
+
+### Phase 3 - Debug + Validation Harness
+
+- Draw collision grid and character bounds in debug overlay
+- Add repeatable scripted movement test path for deterministic regression checks
+- Validate that visual scene layers do not alter collision behavior
+
+### Definition of Done
+
+- All M3 acceptance criteria pass on sample scene/collision file
+- Character controller movement is deterministic under repeated input sequence
+- Collision debug views are sufficient to diagnose stuck/penetration issues quickly
+
+### Failure Modes to Watch
+
+- Corner snagging and oscillation near tile boundaries
+- Sub-step/timestep mismatch causing jitter
+- Collision map/world transform mismatch (off-by-one cell errors)
+
+### Validation Steps
+
+1. Run a fixed scripted input sequence twice and compare final position/state
+2. Walk into walls/corners at multiple angles and verify stable slide behavior
+3. Toggle scene visual layers/parallax and confirm collision result is unchanged
+4. Enable debug collision overlay and verify grid alignment against expected world space
+

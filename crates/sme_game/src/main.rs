@@ -1,3 +1,4 @@
+mod collision;
 mod scene;
 
 use std::collections::{HashMap, HashSet};
@@ -10,6 +11,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use collision::{load_collision_from_path, Aabb, CollisionGrid};
 use scene::{load_scene_from_path, SceneFile, SceneWatcher, SortMode};
 use sme_core::input::{InputState, Key};
 use sme_core::time::TimeState;
@@ -17,9 +19,17 @@ use sme_devtools::DebugOverlay;
 use sme_platform::window::PlatformConfig;
 use sme_render::{Camera2D, GpuContext, SpritePipeline, SpriteVertex, Texture};
 
-const CAMERA_SPEED: f32 = 200.0;
 const SCENE_PATH: &str = "assets/scenes/m2_scene.json";
+const COLLISION_PATH: &str = "assets/collision/m3_collision.json";
 const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/test_sprite.png");
+const DEBUG_WHITE_ASSET: &str = "__debug_white";
+const PLAYER_ASSET: &str = "__player";
+const PLAYER_SPEED: f32 = 160.0;
+
+#[derive(Debug, Clone, Copy)]
+struct CharacterController {
+    aabb: Aabb,
+}
 
 #[derive(Debug, Clone)]
 struct DrawCall {
@@ -45,6 +55,11 @@ struct EngineState {
     scene_path: std::path::PathBuf,
     scene_watcher: SceneWatcher,
     scene: SceneFile,
+    collision_path: std::path::PathBuf,
+    collision_watcher: SceneWatcher,
+    collision_grid: CollisionGrid,
+    character: CharacterController,
+    show_collision_debug: bool,
     textures: HashMap<String, GpuSpriteTexture>,
 
     vertex_buffer: wgpu::Buffer,
@@ -73,6 +88,15 @@ impl EngineState {
                 err
             );
         });
+        let collision_path = std::path::PathBuf::from(COLLISION_PATH);
+        let collision_watcher = SceneWatcher::new(collision_path.clone());
+        let collision_grid = load_collision_from_path(&collision_path).unwrap_or_else(|err| {
+            panic!(
+                "Failed to load initial collision '{}': {}",
+                collision_path.display(),
+                err
+            );
+        });
 
         let mut camera = Camera2D::new(gpu.size.0, gpu.size.1);
         if let Some(scene_camera) = &scene.camera {
@@ -80,6 +104,15 @@ impl EngineState {
             camera.position.y = scene_camera.start_y;
             camera.zoom = scene_camera.zoom;
         }
+        let cell_world = collision_grid.cell_size as f32;
+        let character = CharacterController {
+            aabb: Aabb {
+                center_x: collision_grid.origin.x as f32 + cell_world * 2.0,
+                center_y: collision_grid.origin.y as f32 + cell_world * 2.0,
+                half_w: cell_world * 0.35,
+                half_h: cell_world * 0.45,
+            },
+        };
 
         let camera_uniform = camera.build_uniform();
         let camera_buffer = gpu
@@ -105,6 +138,11 @@ impl EngineState {
             scene_path,
             scene_watcher,
             scene,
+            collision_path,
+            collision_watcher,
+            collision_grid,
+            character,
+            show_collision_debug: true,
             textures: HashMap::new(),
             vertex_buffer,
             index_buffer,
@@ -144,6 +182,23 @@ impl EngineState {
         }
     }
 
+    fn reload_collision(&mut self, reason: &str) {
+        match load_collision_from_path(&self.collision_path) {
+            Ok(grid) => {
+                self.collision_grid = grid;
+                self.rebuild_scene_mesh();
+                log::info!(
+                    "Collision reloaded ({reason}): {} ({})",
+                    self.collision_grid.collision_id,
+                    self.collision_grid.version
+                );
+            }
+            Err(err) => {
+                log::error!("Collision reload failed ({reason}): {err}");
+            }
+        }
+    }
+
     fn ensure_textures_for_scene(&mut self) {
         let mut required_assets = HashSet::new();
         for layer in &self.scene.layers {
@@ -163,6 +218,47 @@ impl EngineState {
                 &asset_path,
             );
             self.textures.insert(asset_path, texture);
+        }
+
+        if !self.textures.contains_key(DEBUG_WHITE_ASSET) {
+            let texture = Texture::from_rgba8(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &[255, 255, 255, 255],
+                1,
+                1,
+                "debug_white",
+            );
+            let bind_group = self
+                .sprite_pipeline
+                .create_texture_bind_group(&self.gpu.device, &texture);
+            self.textures.insert(
+                DEBUG_WHITE_ASSET.to_string(),
+                GpuSpriteTexture {
+                    texture,
+                    bind_group,
+                },
+            );
+        }
+        if !self.textures.contains_key(PLAYER_ASSET) {
+            let texture = Texture::from_rgba8(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &[255, 64, 64, 255],
+                1,
+                1,
+                "player_debug",
+            );
+            let bind_group = self
+                .sprite_pipeline
+                .create_texture_bind_group(&self.gpu.device, &texture);
+            self.textures.insert(
+                PLAYER_ASSET.to_string(),
+                GpuSpriteTexture {
+                    texture,
+                    bind_group,
+                },
+            );
         }
     }
 
@@ -280,6 +376,37 @@ impl EngineState {
             }
         }
 
+        if self.show_collision_debug {
+            let cell = self.collision_grid.cell_size as f32;
+            for solid in self.collision_grid.solids_iter() {
+                let center_x = self.collision_grid.origin.x as f32 + (solid.x as f32 + 0.5) * cell;
+                let center_y = self.collision_grid.origin.y as f32 + (solid.y as f32 + 0.5) * cell;
+                add_quad(
+                    &mut vertices,
+                    &mut indices,
+                    &mut draw_calls,
+                    DEBUG_WHITE_ASSET,
+                    center_x,
+                    center_y,
+                    cell,
+                    cell,
+                    [0.15, 0.9, 0.15, 0.35],
+                );
+            }
+        }
+
+        add_quad(
+            &mut vertices,
+            &mut indices,
+            &mut draw_calls,
+            PLAYER_ASSET,
+            self.character.aabb.center_x,
+            self.character.aabb.center_y,
+            self.character.aabb.half_w * 2.0,
+            self.character.aabb.half_h * 2.0,
+            [1.0, 0.3, 0.3, 0.9],
+        );
+
         (vertices, indices, draw_calls)
     }
 
@@ -393,29 +520,61 @@ impl ApplicationHandler for App {
                     if state.input.is_just_pressed(Key::F3) {
                         state.debug_overlay.toggle();
                     }
+                    if state.input.is_just_pressed(Key::F4) {
+                        state.show_collision_debug = !state.show_collision_debug;
+                        scene_changed = true;
+                        log::info!(
+                            "Collision debug: {}",
+                            if state.show_collision_debug {
+                                "ON"
+                            } else {
+                                "OFF"
+                            }
+                        );
+                    }
 
                     if state.input.is_just_pressed(Key::R) {
                         state.reload_scene("manual trigger (R)");
+                        state.reload_collision("manual trigger (R)");
                         scene_changed = true;
                     } else if state.scene_watcher.should_reload() {
                         state.reload_scene("file watcher");
                         scene_changed = true;
+                    } else if state.collision_watcher.should_reload() {
+                        state.reload_collision("file watcher");
+                        scene_changed = true;
                     }
 
                     let dt = state.time.fixed_dt as f32;
-                    // Editor-style panning: key direction matches on-screen motion.
+                    let mut move_x: f32 = 0.0;
+                    let mut move_y: f32 = 0.0;
                     if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
-                        state.camera.position.x += CAMERA_SPEED * dt;
+                        move_x -= 1.0;
                     }
                     if state.input.is_held(Key::Right) || state.input.is_held(Key::D) {
-                        state.camera.position.x -= CAMERA_SPEED * dt;
+                        move_x += 1.0;
                     }
                     if state.input.is_held(Key::Up) || state.input.is_held(Key::W) {
-                        state.camera.position.y -= CAMERA_SPEED * dt;
+                        move_y += 1.0;
                     }
                     if state.input.is_held(Key::Down) || state.input.is_held(Key::S) {
-                        state.camera.position.y += CAMERA_SPEED * dt;
+                        move_y -= 1.0;
                     }
+
+                    if move_x != 0.0 || move_y != 0.0 {
+                        let len = (move_x * move_x + move_y * move_y).sqrt();
+                        move_x /= len;
+                        move_y /= len;
+                    }
+
+                    let dx = move_x * PLAYER_SPEED * dt;
+                    let dy = move_y * PLAYER_SPEED * dt;
+                    state.character.aabb =
+                        state
+                            .collision_grid
+                            .move_and_collide(state.character.aabb, dx, dy);
+                    state.camera.position.x = state.character.aabb.center_x;
+                    state.camera.position.y = state.character.aabb.center_y;
                 }
                 state.time.end_frame();
 
@@ -550,6 +709,59 @@ fn create_index_buffer(device: &wgpu::Device, index_capacity: usize) -> wgpu::Bu
     })
 }
 
+fn add_quad(
+    vertices: &mut Vec<SpriteVertex>,
+    indices: &mut Vec<u32>,
+    draw_calls: &mut Vec<DrawCall>,
+    asset: &str,
+    center_x: f32,
+    center_y: f32,
+    width: f32,
+    height: f32,
+    color: [f32; 4],
+) {
+    let half_w = width * 0.5;
+    let half_h = height * 0.5;
+    let base_index = vertices.len() as u32;
+
+    vertices.push(SpriteVertex {
+        position: [center_x - half_w, center_y - half_h],
+        tex_coords: [0.0, 1.0],
+        color,
+    });
+    vertices.push(SpriteVertex {
+        position: [center_x + half_w, center_y - half_h],
+        tex_coords: [1.0, 1.0],
+        color,
+    });
+    vertices.push(SpriteVertex {
+        position: [center_x + half_w, center_y + half_h],
+        tex_coords: [1.0, 0.0],
+        color,
+    });
+    vertices.push(SpriteVertex {
+        position: [center_x - half_w, center_y + half_h],
+        tex_coords: [0.0, 0.0],
+        color,
+    });
+
+    let draw_start = indices.len() as u32;
+    indices.extend_from_slice(&[
+        base_index,
+        base_index + 1,
+        base_index + 2,
+        base_index,
+        base_index + 2,
+        base_index + 3,
+    ]);
+
+    draw_calls.push(DrawCall {
+        asset: asset.to_string(),
+        index_start: draw_start,
+        index_count: 6,
+    });
+}
+
 fn load_texture_asset(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -581,6 +793,7 @@ fn map_key(key_code: KeyCode) -> Option<Key> {
         KeyCode::Escape => Some(Key::Escape),
         KeyCode::Space => Some(Key::Space),
         KeyCode::F3 => Some(Key::F3),
+        KeyCode::F4 => Some(Key::F4),
         KeyCode::KeyW => Some(Key::W),
         KeyCode::KeyA => Some(Key::A),
         KeyCode::KeyS => Some(Key::S),

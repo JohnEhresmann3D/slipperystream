@@ -55,9 +55,10 @@ Automated dependency setup (Windows PowerShell):
 
 ## Controls (Current Demo)
 
-- `W A S D` or arrow keys: move camera
-- `R`: reload scene from `assets/scenes/m2_scene.json`
+- `W A S D` or arrow keys: move character (collision-resolved)
+- `R`: reload scene and collision data from disk
 - `F3`: toggle debug overlay
+- `F4`: toggle collision grid debug draw
 - `Esc`: quit
 
 ## Project Layout
@@ -96,6 +97,11 @@ Automated dependency setup (Windows PowerShell):
    - camera movement shows parallax
    - foreground occludes correctly
    - overlay toggles with `F3`
+
+## M3 Collision Files
+
+- Scene file: `assets/scenes/m2_scene.json`
+- Collision file: `assets/collision/m3_collision.json`
 
 ## Roadmap Notes
 
