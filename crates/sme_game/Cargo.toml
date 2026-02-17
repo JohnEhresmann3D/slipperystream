@@ -19,3 +19,5 @@ egui-wgpu = { workspace = true }
 bytemuck = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

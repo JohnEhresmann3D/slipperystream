@@ -56,6 +56,7 @@ Automated dependency setup (Windows PowerShell):
 ## Controls (Current Demo)
 
 - `W A S D` or arrow keys: move camera
+- `R`: reload scene from `assets/scenes/m2_scene.json`
 - `F3`: toggle debug overlay
 - `Esc`: quit
 
