@@ -403,17 +403,18 @@ impl ApplicationHandler for App {
                     }
 
                     let dt = state.time.fixed_dt as f32;
+                    // Editor-style panning: key direction matches on-screen motion.
                     if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
-                        state.camera.position.x -= CAMERA_SPEED * dt;
-                    }
-                    if state.input.is_held(Key::Right) || state.input.is_held(Key::D) {
                         state.camera.position.x += CAMERA_SPEED * dt;
                     }
+                    if state.input.is_held(Key::Right) || state.input.is_held(Key::D) {
+                        state.camera.position.x -= CAMERA_SPEED * dt;
+                    }
                     if state.input.is_held(Key::Up) || state.input.is_held(Key::W) {
-                        state.camera.position.y += CAMERA_SPEED * dt;
+                        state.camera.position.y -= CAMERA_SPEED * dt;
                     }
                     if state.input.is_held(Key::Down) || state.input.is_held(Key::S) {
-                        state.camera.position.y -= CAMERA_SPEED * dt;
+                        state.camera.position.y += CAMERA_SPEED * dt;
                     }
                 }
                 state.time.end_frame();
