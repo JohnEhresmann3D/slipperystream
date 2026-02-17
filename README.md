@@ -1,7 +1,7 @@
 # SlipperyStreamEngine
 
-2D/2.5D game engine prototype focused on a "Saturday morning" visual style:
-layered sprite scenes, parallax, occlusion, deterministic simulation, and hot-reload-first iteration.
+A 2D/2.5D engine prototype focused on a "Saturday morning" visual style:
+layered sprite scenes, parallax, deterministic gameplay simulation, and fast iteration.
 
 ## License
 
@@ -12,7 +12,7 @@ This project is licensed under Apache License 2.0.
 
 ## Current Status
 
-This repository is in active v0.1 milestone development.
+This repository is in active v0.1 milestone development and is ready for prototype gameplay work.
 
 - M1: Core loop + sprite rendering + debug overlay
 - M2: Scene layers + parallax + occlusion
@@ -53,6 +53,19 @@ Automated dependency setup (Windows PowerShell):
 .\scripts\install_requirements.ps1
 ```
 
+## Prototype Readiness
+
+You can prototype platformer gameplay now with:
+- Layered scene authoring from JSON (`assets/scenes/m2_scene.json`)
+- Collision underlay from JSON (`assets/collision/m3_collision.json`)
+- Deterministic movement + jump controller
+- Collision debug visualization
+- Determinism replay tests (`assets/tests/m3_replay_input.json`)
+
+Not ready yet (planned next milestones):
+- Atlas/stable asset-ID pipeline (M4)
+- Lua-authored gameplay path (M4 foundation, M5 production path)
+
 ## Controls (Current Demo)
 
 - `A D` or left/right arrows: move character
@@ -61,6 +74,23 @@ Automated dependency setup (Windows PowerShell):
 - `F3`: toggle debug overlay
 - `F4`: toggle collision grid debug draw
 - `Esc`: quit
+
+## Build A Prototype Level
+
+1. Edit scene visuals:
+   - `assets/scenes/m2_scene.json`
+2. Edit collision layout:
+   - `assets/collision/m3_collision.json`
+3. Run:
+
+```powershell
+cargo run -p sme_game
+```
+
+4. Validate quickly:
+   - Character movement and jumping feel correct
+   - Collision matches intended geometry (`F4` debug on)
+   - No obvious jitter or tunneling
 
 ## Project Layout
 
@@ -109,6 +139,12 @@ Determinism verification (M3):
 
 ```powershell
 cargo test -p sme_game replay_run_is_deterministic
+```
+
+Full `sme_game` test run:
+
+```powershell
+cargo test -p sme_game
 ```
 
 ## Roadmap Notes
