@@ -37,7 +37,16 @@ pub struct CharacterController {
     pub velocity_x: f32,
     pub velocity_y: f32,
     pub grounded: bool,
+    pub contacts: ContactState,
     pub config: ControllerConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContactState {
+    pub left: bool,
+    pub right: bool,
+    pub down: bool,
+    pub up: bool,
 }
 
 impl CharacterController {
@@ -47,6 +56,7 @@ impl CharacterController {
             velocity_x: 0.0,
             velocity_y: 0.0,
             grounded: false,
+            contacts: ContactState::default(),
             config: ControllerConfig::default(),
         }
     }
@@ -81,6 +91,12 @@ impl CharacterController {
 
     fn apply_collision_result(&mut self, result: CollisionMoveResult) {
         self.aabb = result.aabb;
+        self.contacts = ContactState {
+            left: result.blocked_left,
+            right: result.blocked_right,
+            down: result.blocked_down,
+            up: result.blocked_up,
+        };
 
         if (result.blocked_left && self.velocity_x < 0.0)
             || (result.blocked_right && self.velocity_x > 0.0)
@@ -100,6 +116,31 @@ impl CharacterController {
         } else {
             self.grounded = false;
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn is_grounded(&self) -> bool {
+        self.grounded
+    }
+
+    #[allow(dead_code)]
+    pub fn is_blocked_left(&self) -> bool {
+        self.contacts.left
+    }
+
+    #[allow(dead_code)]
+    pub fn is_blocked_right(&self) -> bool {
+        self.contacts.right
+    }
+
+    #[allow(dead_code)]
+    pub fn is_blocked_up(&self) -> bool {
+        self.contacts.up
+    }
+
+    #[allow(dead_code)]
+    pub fn is_blocked_down(&self) -> bool {
+        self.contacts.down
     }
 }
 
@@ -228,5 +269,39 @@ mod tests {
             &grid,
         );
         assert!(controller.velocity_y <= 0.0);
+    }
+
+    #[test]
+    fn contact_state_reports_wall_block() {
+        let grid = sample_grid();
+        let start = Aabb {
+            center_x: grid.origin.x as f32 + (6.0 * 32.0) - 12.0,
+            center_y: grid.origin.y as f32 + (1.0 * 32.0) + 20.0,
+            half_w: 10.0,
+            half_h: 14.0,
+        };
+
+        let mut controller = CharacterController::new(start);
+        controller.grounded = true;
+        let mut hit_right_wall = false;
+        for _ in 0..120 {
+            controller.step(
+                ControllerInput {
+                    move_x: 1.0,
+                    jump_pressed: false,
+                },
+                1.0 / 60.0,
+                &grid,
+            );
+            if controller.is_blocked_right() {
+                hit_right_wall = true;
+                break;
+            }
+        }
+
+        assert!(
+            hit_right_wall,
+            "controller should eventually hit right wall"
+        );
     }
 }

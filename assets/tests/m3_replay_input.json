@@ -1,0 +1,9 @@
+{
+  "fixed_dt": 0.016666667,
+  "frames": [
+    { "move_x": 1.0, "repeat": 60 },
+    { "move_x": 1.0, "jump_pressed": true, "repeat": 1 },
+    { "move_x": 1.0, "repeat": 120 },
+    { "move_x": -1.0, "repeat": 45 }
+  ]
+}

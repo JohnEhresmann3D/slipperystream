@@ -1,5 +1,7 @@
 mod collision;
 mod controller;
+#[cfg(test)]
+mod replay;
 mod scene;
 
 use std::collections::{HashMap, HashSet};

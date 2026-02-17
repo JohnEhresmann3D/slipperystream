@@ -103,6 +103,13 @@ Automated dependency setup (Windows PowerShell):
 
 - Scene file: `assets/scenes/m2_scene.json`
 - Collision file: `assets/collision/m3_collision.json`
+- Replay input sample: `assets/tests/m3_replay_input.json`
+
+Determinism verification (M3):
+
+```powershell
+cargo test -p sme_game replay_run_is_deterministic
+```
 
 ## Roadmap Notes
 
