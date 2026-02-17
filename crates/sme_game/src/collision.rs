@@ -82,14 +82,15 @@ impl CollisionGrid {
             return aabb.center_x;
         }
 
+        const EPS: f32 = 0.001;
         let mut candidate_x = aabb.center_x + dx;
-        let min_y = aabb.center_y - aabb.half_h;
-        let max_y = aabb.center_y + aabb.half_h;
+        let min_y = aabb.center_y - aabb.half_h + EPS;
+        let max_y = aabb.center_y + aabb.half_h - EPS;
         let y0 = self.world_to_cell_y(min_y);
         let y1 = self.world_to_cell_y(max_y);
 
         if dx > 0.0 {
-            let max_x = candidate_x + aabb.half_w;
+            let max_x = candidate_x + aabb.half_w - EPS;
             let x_cell = self.world_to_cell_x(max_x);
             for y in y0..=y1 {
                 if self.is_solid(x_cell, y) {
@@ -97,8 +98,10 @@ impl CollisionGrid {
                     candidate_x = candidate_x.min(cell_left - aabb.half_w);
                 }
             }
+            // Never push opposite direction when resolving positive motion.
+            candidate_x = candidate_x.max(aabb.center_x);
         } else {
-            let min_x = candidate_x - aabb.half_w;
+            let min_x = candidate_x - aabb.half_w + EPS;
             let x_cell = self.world_to_cell_x(min_x);
             for y in y0..=y1 {
                 if self.is_solid(x_cell, y) {
@@ -106,6 +109,8 @@ impl CollisionGrid {
                     candidate_x = candidate_x.max(cell_right + aabb.half_w);
                 }
             }
+            // Never push opposite direction when resolving negative motion.
+            candidate_x = candidate_x.min(aabb.center_x);
         }
 
         candidate_x
@@ -116,14 +121,15 @@ impl CollisionGrid {
             return aabb.center_y;
         }
 
+        const EPS: f32 = 0.001;
         let mut candidate_y = aabb.center_y + dy;
-        let min_x = aabb.center_x - aabb.half_w;
-        let max_x = aabb.center_x + aabb.half_w;
+        let min_x = aabb.center_x - aabb.half_w + EPS;
+        let max_x = aabb.center_x + aabb.half_w - EPS;
         let x0 = self.world_to_cell_x(min_x);
         let x1 = self.world_to_cell_x(max_x);
 
         if dy > 0.0 {
-            let max_y = candidate_y + aabb.half_h;
+            let max_y = candidate_y + aabb.half_h - EPS;
             let y_cell = self.world_to_cell_y(max_y);
             for x in x0..=x1 {
                 if self.is_solid(x, y_cell) {
@@ -131,8 +137,10 @@ impl CollisionGrid {
                     candidate_y = candidate_y.min(cell_bottom - aabb.half_h);
                 }
             }
+            // Never push opposite direction when resolving positive motion.
+            candidate_y = candidate_y.max(aabb.center_y);
         } else {
-            let min_y = candidate_y - aabb.half_h;
+            let min_y = candidate_y - aabb.half_h + EPS;
             let y_cell = self.world_to_cell_y(min_y);
             for x in x0..=x1 {
                 if self.is_solid(x, y_cell) {
@@ -140,6 +148,8 @@ impl CollisionGrid {
                     candidate_y = candidate_y.max(cell_top + aabb.half_h);
                 }
             }
+            // Never push opposite direction when resolving negative motion.
+            candidate_y = candidate_y.min(aabb.center_y);
         }
 
         candidate_y
@@ -290,6 +300,41 @@ mod tests {
         assert!(
             moved.center_x <= 64.0 - start.half_w + 0.001,
             "AABB should stop at left edge of wall cell"
+        );
+    }
+
+    #[test]
+    fn move_up_against_obstacle_does_not_push_downward() {
+        let grid = CollisionGrid::from_file(CollisionFile {
+            version: "0.1".to_string(),
+            collision_id: "test".to_string(),
+            cell_size: 32,
+            origin: GridOrigin { x: 0, y: 0 },
+            width: 8,
+            height: 8,
+            solids: vec![
+                // floor
+                GridCell { x: 0, y: 0 },
+                GridCell { x: 1, y: 0 },
+                GridCell { x: 2, y: 0 },
+                GridCell { x: 3, y: 0 },
+                // side obstacle to the right of player
+                GridCell { x: 2, y: 1 },
+            ],
+        });
+
+        let start = Aabb {
+            // Standing on floor and touching near side obstacle.
+            center_x: 48.0,
+            center_y: 40.0,
+            half_w: 8.0,
+            half_h: 8.0,
+        };
+
+        let moved = grid.move_and_collide(start, 0.0, 10.0);
+        assert!(
+            moved.center_y >= start.center_y - 0.0001,
+            "Moving up should never push the character downward"
         );
     }
 }
