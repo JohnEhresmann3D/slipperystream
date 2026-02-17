@@ -28,6 +28,7 @@ use sme_render::{Camera2D, GpuContext, SpritePipeline, SpriteVertex, Texture};
 const SCENE_PATH: &str = "assets/scenes/m4_scene.json";
 const COLLISION_PATH: &str = "assets/collision/m3_collision.json";
 const ATLAS_PATH: &str = "assets/generated/m4_sample_atlas.json";
+const STRICT_SPRITE_ID_RESOLUTION: bool = true;
 const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/test_sprite.png");
 const DEBUG_WHITE_ASSET: &str = "__debug_white";
 const PLAYER_ASSET: &str = "__player";
@@ -74,6 +75,7 @@ struct EngineState {
     mesh_index_capacity: usize,
     draw_calls: Vec<DrawCall>,
     sprite_count: usize,
+    atlas_bind_count: usize,
 }
 
 impl EngineState {
@@ -123,6 +125,13 @@ impl EngineState {
             );
             None
         };
+        if let Err(err) = validate_scene_sprite_references(&scene, atlas_registry.as_ref()) {
+            panic!(
+                "Initial scene '{}' failed sprite reference validation: {}",
+                scene_path.display(),
+                err
+            );
+        }
 
         let mut camera = Camera2D::new(gpu.size.0, gpu.size.1);
         if let Some(scene_camera) = &scene.camera {
@@ -179,6 +188,7 @@ impl EngineState {
             mesh_index_capacity: 0,
             draw_calls: Vec::new(),
             sprite_count: 0,
+            atlas_bind_count: 0,
         };
 
         // Startup order matters: load textures before building the first mesh.
@@ -190,8 +200,14 @@ impl EngineState {
 
     fn reload_scene(&mut self, reason: &str) {
         match load_scene_from_path(&self.scene_path) {
-            Ok(scene) => {
-                self.scene = scene;
+            Ok(scene_candidate) => {
+                if let Err(err) =
+                    validate_scene_sprite_references(&scene_candidate, self.atlas_registry.as_ref())
+                {
+                    log::error!("Scene reload failed ({reason}): {err}");
+                    return;
+                }
+                self.scene = scene_candidate;
                 if let Some(scene_camera) = &self.scene.camera {
                     self.camera.position.x = scene_camera.start_x;
                     self.camera.position.y = scene_camera.start_y;
@@ -230,9 +246,15 @@ impl EngineState {
 
     fn reload_atlas(&mut self, reason: &str) {
         match load_atlas_from_path(&self.atlas_path) {
-            Ok(registry) => {
-                let atlas_id = registry.atlas_id.clone();
-                self.atlas_registry = Some(registry);
+            Ok(registry_candidate) => {
+                if let Err(err) =
+                    validate_scene_sprite_references(&self.scene, Some(&registry_candidate))
+                {
+                    log::error!("Atlas reload failed ({reason}): {err}");
+                    return;
+                }
+                let atlas_id = registry_candidate.atlas_id.clone();
+                self.atlas_registry = Some(registry_candidate);
                 self.ensure_textures_for_scene();
                 self.rebuild_scene_mesh();
                 log::info!("Atlas reloaded ({reason}): {}", atlas_id);
@@ -389,7 +411,10 @@ impl EngineState {
             let parallax_offset = self.camera.position * (1.0 - layer.parallax);
             for sprite in &sprites {
                 let Some(sprite_entry) = self.resolve_sprite_entry(sprite) else {
-                    log::warn!("Skipping sprite '{}' due to unresolved asset reference", sprite.id);
+                    log::warn!(
+                        "Skipping sprite '{}' due to unresolved asset reference",
+                        sprite.id
+                    );
                     continue;
                 };
                 let Some(texture) = self.textures.get(&sprite_entry.texture_path) else {
@@ -413,12 +438,7 @@ impl EngineState {
                 let top = sprite_h * (1.0 - pivot_y);
                 let base_index = vertices.len() as u32;
 
-                let mut corners = [
-                    [left, bottom],
-                    [right, bottom],
-                    [right, top],
-                    [left, top],
-                ];
+                let mut corners = [[left, bottom], [right, bottom], [right, top], [left, top]];
                 let radians = sprite.rotation_deg.to_radians();
                 if radians != 0.0 {
                     let cos_r = radians.cos();
@@ -627,21 +647,21 @@ impl ApplicationHandler for App {
                         );
                     }
 
-                if state.input.is_just_pressed(Key::R) {
-                    state.reload_scene("manual trigger (R)");
-                    state.reload_collision("manual trigger (R)");
-                    state.reload_atlas("manual trigger (R)");
-                    scene_changed = true;
-                } else if state.scene_watcher.should_reload() {
-                    state.reload_scene("file watcher");
-                    scene_changed = true;
-                } else if state.collision_watcher.should_reload() {
-                    state.reload_collision("file watcher");
-                    scene_changed = true;
-                } else if state.atlas_watcher.should_reload() {
-                    state.reload_atlas("file watcher");
-                    scene_changed = true;
-                }
+                    if state.input.is_just_pressed(Key::R) {
+                        state.reload_scene("manual trigger (R)");
+                        state.reload_collision("manual trigger (R)");
+                        state.reload_atlas("manual trigger (R)");
+                        scene_changed = true;
+                    } else if state.scene_watcher.should_reload() {
+                        state.reload_scene("file watcher");
+                        scene_changed = true;
+                    } else if state.collision_watcher.should_reload() {
+                        state.reload_collision("file watcher");
+                        scene_changed = true;
+                    } else if state.atlas_watcher.should_reload() {
+                        state.reload_atlas("file watcher");
+                        scene_changed = true;
+                    }
 
                     // Controller input is turned into deterministic simulation intent.
                     let dt = state.time.fixed_dt as f32;
@@ -685,16 +705,15 @@ impl ApplicationHandler for App {
                     return;
                 };
 
-                let (egui_primitives, egui_textures_delta) =
-                    state.debug_overlay.prepare(
-                        &state.window,
-                        &state.time,
-                        Some(OverlayStats {
-                            draw_calls: state.draw_calls.len() as u32,
-                            atlas_binds: state.draw_calls.len() as u32,
-                            sprite_count: state.sprite_count as u32,
-                        }),
-                    );
+                let (egui_primitives, egui_textures_delta) = state.debug_overlay.prepare(
+                    &state.window,
+                    &state.time,
+                    Some(OverlayStats {
+                        draw_calls: state.draw_calls.len() as u32,
+                        atlas_binds: state.atlas_bind_count as u32,
+                        sprite_count: state.sprite_count as u32,
+                    }),
+                );
                 let screen_descriptor = egui_wgpu::ScreenDescriptor {
                     size_in_pixels: [state.gpu.size.0, state.gpu.size.1],
                     pixels_per_point: state.window.scale_factor() as f32,
@@ -709,6 +728,8 @@ impl ApplicationHandler for App {
                         });
 
                 {
+                    let mut atlas_bind_count = 0usize;
+                    let mut last_bound_texture_key: Option<&str> = None;
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Scene Render Pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -736,7 +757,11 @@ impl ApplicationHandler for App {
 
                     for draw in &state.draw_calls {
                         if let Some(texture) = state.textures.get(&draw.texture_key) {
-                            render_pass.set_bind_group(1, &texture.bind_group, &[]);
+                            if last_bound_texture_key != Some(draw.texture_key.as_str()) {
+                                render_pass.set_bind_group(1, &texture.bind_group, &[]);
+                                last_bound_texture_key = Some(draw.texture_key.as_str());
+                                atlas_bind_count += 1;
+                            }
                             render_pass.draw_indexed(
                                 draw.index_start..(draw.index_start + draw.index_count),
                                 0,
@@ -744,6 +769,7 @@ impl ApplicationHandler for App {
                             );
                         }
                     }
+                    state.atlas_bind_count = atlas_bind_count;
                 }
 
                 state.debug_overlay.upload(
@@ -858,7 +884,12 @@ fn add_quad(
     push_draw_call(draw_calls, asset, draw_start, 6);
 }
 
-fn push_draw_call(draw_calls: &mut Vec<DrawCall>, texture_key: &str, index_start: u32, index_count: u32) {
+fn push_draw_call(
+    draw_calls: &mut Vec<DrawCall>,
+    texture_key: &str,
+    index_start: u32,
+    index_count: u32,
+) {
     if let Some(last) = draw_calls.last_mut() {
         let contiguous = last.index_start + last.index_count == index_start;
         if last.texture_key == texture_key && contiguous {
@@ -912,6 +943,37 @@ fn map_key(key_code: KeyCode) -> Option<Key> {
         KeyCode::KeyR => Some(Key::R),
         _ => None,
     }
+}
+
+fn validate_scene_sprite_references(
+    scene: &SceneFile,
+    atlas_registry: Option<&AtlasRegistry>,
+) -> Result<(), String> {
+    if !STRICT_SPRITE_ID_RESOLUTION {
+        return Ok(());
+    }
+
+    for layer in &scene.layers {
+        for sprite in &layer.sprites {
+            let Some(sprite_id) = &sprite.sprite_id else {
+                continue;
+            };
+            let registry = atlas_registry.ok_or_else(|| {
+                format!(
+                    "sprite '{}' references sprite_id '{}' but no atlas metadata is loaded",
+                    sprite.id, sprite_id
+                )
+            })?;
+            if registry.resolve(sprite_id).is_none() {
+                return Err(format!(
+                    "sprite '{}' references missing sprite_id '{}' in atlas '{}'",
+                    sprite.id, sprite_id, registry.atlas_id
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn main() {

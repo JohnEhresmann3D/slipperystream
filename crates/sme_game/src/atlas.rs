@@ -130,9 +130,27 @@ fn validate_atlas(atlas: &AtlasFile) -> Result<(), String> {
                 sprite.sprite_id
             ));
         }
-        if sprite.rect_px.x + sprite.rect_px.w > atlas.texture.width
-            || sprite.rect_px.y + sprite.rect_px.h > atlas.texture.height
-        {
+        let right = sprite
+            .rect_px
+            .x
+            .checked_add(sprite.rect_px.w)
+            .ok_or_else(|| {
+                format!(
+                    "Atlas validation failed: sprite '{}' rect overflows u32 range",
+                    sprite.sprite_id
+                )
+            })?;
+        let bottom = sprite
+            .rect_px
+            .y
+            .checked_add(sprite.rect_px.h)
+            .ok_or_else(|| {
+                format!(
+                    "Atlas validation failed: sprite '{}' rect overflows u32 range",
+                    sprite.sprite_id
+                )
+            })?;
+        if right > atlas.texture.width || bottom > atlas.texture.height {
             return Err(format!(
                 "Atlas validation failed: sprite '{}' rect exceeds atlas bounds",
                 sprite.sprite_id
@@ -200,6 +218,32 @@ mod tests {
         let atlas = load_atlas_from_path(&path).expect("atlas should load");
         assert_eq!(atlas.atlas_id, "test");
         assert!(atlas.resolve("id-1").is_some());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_atlas_from_path_rejects_overflowing_rect() {
+        let path = temp_file_path("overflow_rect");
+        let json = r#"
+        {
+          "version": "0.1",
+          "atlas_id": "test",
+          "texture": { "path": "assets/generated/test.png", "width": 64, "height": 64 },
+          "sprites": [
+            {
+              "sprite_id": "id-overflow",
+              "source_path": "assets/textures/a.png",
+              "rect_px": { "x": 4294967295, "y": 0, "w": 8, "h": 8 },
+              "uv": { "u0": 0.0, "v0": 0.0, "u1": 0.5, "v1": 0.5 }
+            }
+          ]
+        }
+        "#;
+        fs::write(&path, json).expect("failed to write temp atlas file");
+
+        let err = load_atlas_from_path(&path).expect_err("overflow rect should fail");
+        assert!(err.contains("rect overflows u32 range"));
 
         let _ = fs::remove_file(path);
     }

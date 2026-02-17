@@ -155,8 +155,12 @@ fn main() -> Result<(), String> {
     }
 
     if let Some(parent) = atlas_png_output.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create atlas output dir '{}': {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create atlas output dir '{}': {e}",
+                parent.display()
+            )
+        })?;
     }
     if let Some(parent) = atlas_json_output.parent() {
         fs::create_dir_all(parent).map_err(|e| {
@@ -167,9 +171,10 @@ fn main() -> Result<(), String> {
         })?;
     }
 
+    let png_tmp = temporary_output_path(&atlas_png_output);
     atlas
-        .save(&atlas_png_output)
-        .map_err(|e| format!("Failed to write '{}': {e}", atlas_png_output.display()))?;
+        .save(&png_tmp)
+        .map_err(|e| format!("Failed to write '{}': {e}", png_tmp.display()))?;
 
     let atlas_id = atlas_json_output
         .file_stem()
@@ -188,8 +193,11 @@ fn main() -> Result<(), String> {
     };
     let json = serde_json::to_string_pretty(&metadata)
         .map_err(|e| format!("Failed to serialize atlas metadata: {e}"))?;
-    fs::write(&atlas_json_output, json)
-        .map_err(|e| format!("Failed to write '{}': {e}", atlas_json_output.display()))?;
+    let json_tmp = temporary_output_path(&atlas_json_output);
+    fs::write(&json_tmp, json)
+        .map_err(|e| format!("Failed to write '{}': {e}", json_tmp.display()))?;
+    promote_temporary_file(&png_tmp, &atlas_png_output)?;
+    promote_temporary_file(&json_tmp, &atlas_json_output)?;
 
     println!(
         "Packed {} sprites -> {} and {}",
@@ -202,4 +210,30 @@ fn main() -> Result<(), String> {
 
 fn normalize_path_for_json(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn temporary_output_path(path: &Path) -> PathBuf {
+    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    if extension.is_empty() {
+        return path.with_extension("tmp");
+    }
+    path.with_extension(format!("{extension}.tmp"))
+}
+
+fn promote_temporary_file(temp_path: &Path, final_path: &Path) -> Result<(), String> {
+    if final_path.exists() {
+        fs::remove_file(final_path).map_err(|e| {
+            format!(
+                "Failed to replace existing output '{}': {e}",
+                final_path.display()
+            )
+        })?;
+    }
+    fs::rename(temp_path, final_path).map_err(|e| {
+        format!(
+            "Failed to move temporary output '{}' -> '{}': {e}",
+            temp_path.display(),
+            final_path.display()
+        )
+    })
 }
