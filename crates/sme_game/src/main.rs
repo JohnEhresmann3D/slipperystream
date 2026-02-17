@@ -149,6 +149,7 @@ impl EngineState {
             draw_calls: Vec::new(),
         };
 
+        // Startup order matters: load textures before building the first mesh.
         state.ensure_textures_for_scene();
         state.ensure_mesh_capacity(4, 6);
         state.rebuild_scene_mesh();
@@ -259,6 +260,8 @@ impl EngineState {
     }
 
     fn rebuild_scene_mesh(&mut self) {
+        // Build a single CPU-side mesh each frame from scene + debug overlays,
+        // then stream it into GPU buffers.
         let (vertices, indices, draw_calls) = self.build_mesh();
         self.ensure_mesh_capacity(vertices.len(), indices.len());
         self.draw_calls = draw_calls;
@@ -280,6 +283,7 @@ impl EngineState {
         let mut indices = Vec::new();
         let mut draw_calls = Vec::new();
 
+        // Visual scene layers render back-to-front according to authored order.
         for layer in &self.scene.layers {
             if !layer.visible {
                 continue;
@@ -298,6 +302,7 @@ impl EngineState {
                 log::trace!("Rendering occlusion layer '{}'", layer.id);
             }
 
+            // Parallax is implemented as a per-layer camera-space offset.
             let parallax_offset = self.camera.position * (1.0 - layer.parallax);
             for sprite in &sprites {
                 let Some(texture) = self.textures.get(&sprite.asset) else {
@@ -372,6 +377,7 @@ impl EngineState {
             }
         }
 
+        // Debug collision overlay is rendered as translucent quads in world space.
         if self.show_collision_debug {
             let cell = self.collision_grid.cell_size as f32;
             for solid in self.collision_grid.solids_iter() {
@@ -391,6 +397,7 @@ impl EngineState {
             }
         }
 
+        // Player visualization uses a simple debug quad driven by controller AABB.
         add_quad(
             &mut vertices,
             &mut indices,
@@ -506,6 +513,7 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                // Fixed-step simulation phase.
                 state.time.begin_frame();
                 let mut scene_changed = false;
                 while state.time.should_step() {
@@ -541,6 +549,7 @@ impl ApplicationHandler for App {
                         scene_changed = true;
                     }
 
+                    // Controller input is turned into deterministic simulation intent.
                     let dt = state.time.fixed_dt as f32;
                     let mut move_x: f32 = 0.0;
                     if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
@@ -570,6 +579,7 @@ impl ApplicationHandler for App {
                     state.rebuild_scene_mesh();
                 }
 
+                // Render phase reads finalized simulation state from this frame.
                 let camera_uniform = state.camera.build_uniform();
                 state.gpu.queue.write_buffer(
                     &state.camera_buffer,

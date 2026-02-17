@@ -99,6 +99,8 @@ pub fn load_scene_from_path(scene_path: &Path) -> Result<SceneFile, String> {
 }
 
 fn validate_scene(scene: &SceneFile) -> Result<(), String> {
+    // Validation is intentionally strict on identifiers so loader/runtime paths
+    // can assume uniqueness without extra defensive branching.
     if scene.layers.is_empty() {
         return Err("Scene validation failed: layers array is empty".to_string());
     }

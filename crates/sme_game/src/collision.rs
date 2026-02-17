@@ -89,6 +89,8 @@ impl CollisionGrid {
     pub fn move_and_collide_detailed(&self, aabb: Aabb, dx: f32, dy: f32) -> CollisionMoveResult {
         const EPS: f32 = 0.0001;
 
+        // Axis-separable move-and-slide:
+        // resolve X first, then resolve Y using updated X position.
         let resolved_x = self.resolve_axis_x(aabb, dx);
         let x_expected = aabb.center_x + dx;
         let collided_x = (resolved_x - x_expected).abs() > EPS;
@@ -100,6 +102,8 @@ impl CollisionGrid {
         let collided_y = (resolved_y - y_expected).abs() > EPS;
         moved.center_y = resolved_y;
 
+        // Directional block flags are consumed by controller code to zero
+        // velocities only when motion was actually blocked on that side.
         let blocked_left = collided_x && dx < 0.0;
         let blocked_right = collided_x && dx > 0.0;
         let blocked_down = collided_y && dy < 0.0;
@@ -136,7 +140,7 @@ impl CollisionGrid {
                     candidate_x = candidate_x.min(cell_left - aabb.half_w);
                 }
             }
-            // Never push opposite direction when resolving positive motion.
+            // Guardrail: never push opposite direction during resolution.
             candidate_x = candidate_x.max(aabb.center_x);
         } else {
             let min_x = candidate_x - aabb.half_w + EPS;
@@ -147,7 +151,7 @@ impl CollisionGrid {
                     candidate_x = candidate_x.max(cell_right + aabb.half_w);
                 }
             }
-            // Never push opposite direction when resolving negative motion.
+            // Guardrail: never push opposite direction during resolution.
             candidate_x = candidate_x.min(aabb.center_x);
         }
 
@@ -175,7 +179,7 @@ impl CollisionGrid {
                     candidate_y = candidate_y.min(cell_bottom - aabb.half_h);
                 }
             }
-            // Never push opposite direction when resolving positive motion.
+            // Guardrail: never push opposite direction during resolution.
             candidate_y = candidate_y.max(aabb.center_y);
         } else {
             let min_y = candidate_y - aabb.half_h + EPS;
@@ -186,7 +190,7 @@ impl CollisionGrid {
                     candidate_y = candidate_y.max(cell_top + aabb.half_h);
                 }
             }
-            // Never push opposite direction when resolving negative motion.
+            // Guardrail: never push opposite direction during resolution.
             candidate_y = candidate_y.min(aabb.center_y);
         }
 
