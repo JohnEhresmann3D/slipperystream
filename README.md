@@ -28,6 +28,9 @@ Planning docs live in `docs/planning/`.
 - Rust toolchain (stable)
 - Cargo
 
+Detailed requirements and setup options:
+- `docs/setup/requirements.md`
+
 ## Quick Start
 
 1. Clone repo.
@@ -41,6 +44,13 @@ cargo build
 
 ```powershell
 cargo run -p sme_game
+```
+
+Automated dependency setup (Windows PowerShell):
+
+```powershell
+.\scripts\install_requirements.ps1 -CheckOnly
+.\scripts\install_requirements.ps1
 ```
 
 ## Controls (Current Demo)
