@@ -13,6 +13,7 @@ pub enum Key {
     A,
     S,
     D,
+    R,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
