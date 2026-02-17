@@ -46,7 +46,10 @@ pub enum SortMode {
 #[derive(Debug, Deserialize, Clone)]
 pub struct SceneSprite {
     pub id: String,
-    pub asset: String,
+    #[serde(default)]
+    pub asset: Option<String>,
+    #[serde(default)]
+    pub sprite_id: Option<String>,
     pub x: f32,
     pub y: f32,
     #[serde(default)]
@@ -125,6 +128,12 @@ fn validate_scene(scene: &SceneFile) -> Result<(), String> {
             if !sprite_ids.insert(sprite.id.clone()) {
                 return Err(format!(
                     "Scene validation failed: duplicate sprite id '{}'",
+                    sprite.id
+                ));
+            }
+            if sprite.asset.is_none() && sprite.sprite_id.is_none() {
+                return Err(format!(
+                    "Scene validation failed: sprite '{}' must provide either 'asset' or 'sprite_id'",
                     sprite.id
                 ));
             }
@@ -337,6 +346,31 @@ mod tests {
             !watcher.should_reload(),
             "without changes, second poll should not reload"
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_scene_rejects_sprite_without_asset_or_sprite_id() {
+        let path = temp_file_path("missing_sprite_ref");
+        let json = r#"
+        {
+          "version": "0.1",
+          "scene_id": "test_scene",
+          "layers": [
+            {
+              "id": "layer_a",
+              "parallax": 1.0,
+              "sprites": [
+                { "id": "s1", "x": 0.0, "y": 0.0 }
+              ]
+            }
+          ]
+        }
+        "#;
+        write_scene_file(&path, json);
+        let err = load_scene_from_path(&path).expect_err("missing sprite refs should fail");
+        assert!(err.contains("must provide either 'asset' or 'sprite_id'"));
 
         let _ = fs::remove_file(path);
     }

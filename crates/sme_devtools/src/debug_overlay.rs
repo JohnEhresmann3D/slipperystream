@@ -1,6 +1,13 @@
 use sme_core::time::TimeState;
 use winit::window::Window;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OverlayStats {
+    pub draw_calls: u32,
+    pub atlas_binds: u32,
+    pub sprite_count: u32,
+}
+
 pub struct DebugOverlay {
     pub egui_ctx: egui::Context,
     pub egui_winit_state: egui_winit::State,
@@ -51,6 +58,7 @@ impl DebugOverlay {
         &mut self,
         window: &Window,
         time: &TimeState,
+        stats: Option<OverlayStats>,
     ) -> (Vec<egui::ClippedPrimitive>, egui::TexturesDelta) {
         let raw_input = self.egui_winit_state.take_egui_input(window);
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
@@ -63,6 +71,12 @@ impl DebugOverlay {
                         ui.label(format!("Steps this frame: {}", time.steps_this_frame));
                         ui.label(format!("Total steps: {}", time.fixed_step_count));
                         ui.label(format!("Frame: {}", time.frame_count));
+                        if let Some(stats) = stats {
+                            ui.separator();
+                            ui.label(format!("Draw calls: {}", stats.draw_calls));
+                            ui.label(format!("Atlas binds: {}", stats.atlas_binds));
+                            ui.label(format!("Sprites: {}", stats.sprite_count));
+                        }
                     });
             }
         });

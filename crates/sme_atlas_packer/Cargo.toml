@@ -1,0 +1,15 @@
+[package]
+name = "sme_atlas_packer"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[[bin]]
+name = "sme_atlas_packer"
+path = "src/main.rs"
+
+[dependencies]
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
