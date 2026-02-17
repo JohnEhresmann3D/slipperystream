@@ -137,6 +137,26 @@ Overlay must display:
 - Atlas binds
 - Basic memory usage estimate
 
+### 3.8 Lua Gameplay Scripting (v0.1 Bounded Scope)
+
+In scope for v0.1:
+
+- Embed Lua runtime for gameplay behaviors (entity/controller logic only)
+- Script hot reload at safe frame boundaries
+- Deterministic scripting contract:
+  - Lua update runs only during fixed-step simulation updates
+  - No direct wall-clock or platform API access from gameplay scripts
+- Explicit Rust->Lua API boundary for:
+  - Input queries
+  - Read/write gameplay component state
+  - Spawn/despawn and event callbacks
+
+Out of scope for v0.1:
+
+- General plugin/mod framework
+- Unrestricted scripting access to platform/render internals
+- Live editing of engine-core logic in Lua
+
 ---
 
 ## 4. Tooling - In Scope
@@ -160,7 +180,7 @@ Overlay must display:
 
 - General-purpose editor suite
 - Multiplayer / networking
-- Scripting runtime (Lua, etc.)
+- Full plugin/mod scripting ecosystem
 - Advanced physics engine
 - Full 3D mesh pipeline
 - Skeletal animation system
@@ -207,7 +227,7 @@ M1 - Core loop + sprite rendering + debug overlay
 M2 - Scene layers + parallax + occlusion  
 M3 - Collision underlay + character controller  
 M4 - Atlas packer + stable asset IDs  
-M5 - Hot reload + tier toggles + polish pass
+M5 - Hot reload + tier toggles + polish pass + Lua gameplay bridge
 
 ### M2: Scene Layers + Parallax + Occlusion
 
@@ -368,4 +388,42 @@ Risk:
 2. Walk into walls/corners at multiple angles and verify stable slide behavior
 3. Toggle scene visual layers/parallax and confirm collision result is unchanged
 4. Enable debug collision overlay and verify grid alignment against expected world space
+
+---
+
+## 11. Lua Integration Plan (Milestone-Aligned)
+
+Objective:
+Enable gameplay authoring in Lua while keeping engine determinism and performance guarantees.
+
+### M3 (Foundation Hooks)
+
+- Keep gameplay state deterministic in Rust simulation loop
+- Define data model boundary that Lua will control (controller intent, ability state, simple events)
+- Add deterministic test harness patterns that can validate scripted behavior later
+
+### M4 (Runtime Boundary + Data Ownership)
+
+- Integrate Lua runtime (`mlua`) into engine/game framework layer
+- Implement minimal Rust->Lua API:
+  - Input read
+  - Query collision flags/grounded state
+  - Write desired movement/action intents
+- Enforce ownership rule:
+  - Rust owns authoritative simulation state and collision resolution
+  - Lua owns behavior decisions and gameplay rules
+
+### M5 (Production Lua Path)
+
+- Move character controller behavior logic from hardcoded Rust flow to Lua script
+- Add safe hot reload for Lua scripts at frame boundaries
+- Add script error handling/fallback policy (no partial corrupted state)
+- Ship sample gameplay script as canonical authoring example
+
+### Lua Definition of Done (v0.1)
+
+- A sample playable character is behavior-authored in Lua
+- Script reload does not crash or corrupt running simulation
+- Same scripted input sequence yields same simulation result across repeated runs
+- Rust-only fallback remains available if script load fails
 

@@ -17,7 +17,7 @@ Status: ACTIVE. Update this file when technical build decisions change.
 8. Hot reload reset policy: `Apply only at safe frame boundary; atlas in place when valid; scene/collision reload may reset current scene` (proposed)
 9. Debug UI stack: `egui overlay + debug draw primitives` (proposed)
 10. CI baseline: `GitHub Actions (Windows) - cargo build, cargo test, cargo clippy, cargo fmt --check` (proposed)
-11. Lua runtime: `mlua (LuaJIT backend)` (proposed)
+11. Lua runtime: `mlua (LuaJIT backend)` (accepted - phased rollout M4/M5)
 12. Audio library: `kira` (proposed)
 
 ## Rationale (Short)
@@ -30,6 +30,7 @@ Status: ACTIVE. Update this file when technical build decisions change.
 - egui is a pure-Rust immediate-mode UI, simpler integration than FFI to Dear ImGui.
 - kira provides expressive audio mixing with a Rust-native API.
 - Collision/hot-reload choices align with locked v0.1 scope and safety rules.
+- Lua integration is bounded: Rust remains simulation authority; Lua drives gameplay behavior decisions.
 
 ## Approval State
 - Current state: PROPOSED defaults pending approval.
@@ -39,3 +40,4 @@ Status: ACTIVE. Update this file when technical build decisions change.
 - 2026-02-15: File created to prevent workflow-link drift.
 - 2026-02-15: Added proposed defaults and rationale for collaborative review.
 - 2026-02-16: Pivoted from C++20/CMake/D3D11/SDL3 to Rust/Cargo/wgpu/winit. Language+build accepted; other decisions proposed for review.
+- 2026-02-17: Marked Lua runtime decision accepted with phased M4/M5 rollout and deterministic boundary constraints.
