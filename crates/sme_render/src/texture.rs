@@ -78,9 +78,13 @@ impl Texture {
         height: u32,
         label: &str,
     ) -> Self {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|wh| wh.checked_mul(4))
+            .expect("texture dimensions overflow usize");
         assert_eq!(
             rgba.len(),
-            (width as usize) * (height as usize) * 4,
+            expected_len,
             "from_rgba8 expects width*height*4 bytes"
         );
 
