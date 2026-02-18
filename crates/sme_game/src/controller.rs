@@ -62,6 +62,7 @@ impl CharacterController {
     }
 
     pub fn step(&mut self, input: ControllerInput, dt: f32, collision_grid: &CollisionGrid) {
+        // Horizontal control: accelerate toward intent, friction when grounded and idle.
         let accel = if self.grounded {
             self.config.accel_ground
         } else {
@@ -75,11 +76,13 @@ impl CharacterController {
             self.velocity_x = move_towards(self.velocity_x, 0.0, self.config.friction_ground * dt);
         }
 
+        // Jump is edge-triggered and only legal from grounded state.
         if input.jump_pressed && self.grounded {
             self.velocity_y = self.config.jump_speed;
             self.grounded = false;
         }
 
+        // Gravity is always applied in fixed-step simulation.
         self.velocity_y =
             (self.velocity_y + self.config.gravity * dt).max(self.config.max_fall_speed);
 
@@ -107,6 +110,7 @@ impl CharacterController {
         if result.blocked_up && self.velocity_y > 0.0 {
             self.velocity_y = 0.0;
         }
+        // Grounded is driven from collision contact, not from y-position heuristics.
         if result.blocked_down && self.velocity_y < 0.0 {
             self.velocity_y = 0.0;
             self.grounded = true;

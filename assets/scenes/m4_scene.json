@@ -1,0 +1,86 @@
+{
+  "version": "0.1",
+  "scene_id": "m4_atlas_demo",
+  "camera": {
+    "start_x": 0.0,
+    "start_y": 0.0,
+    "zoom": 1.0
+  },
+  "layers": [
+    {
+      "id": "background",
+      "parallax": 0.4,
+      "sort_mode": "none",
+      "occlusion": false,
+      "visible": true,
+      "sprites": [
+        {
+          "id": "bg_1",
+          "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+          "x": -260.0,
+          "y": 100.0,
+          "scale_x": 2.0,
+          "scale_y": 2.0
+        },
+        {
+          "id": "bg_2",
+          "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+          "x": 260.0,
+          "y": 80.0,
+          "scale_x": 1.8,
+          "scale_y": 1.8
+        }
+      ]
+    },
+    {
+      "id": "mid",
+      "parallax": 0.8,
+      "sort_mode": "y",
+      "occlusion": false,
+      "visible": true,
+      "sprites": [
+        {
+          "id": "mid_1",
+          "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+          "x": -120.0,
+          "y": -20.0,
+          "scale_x": 1.3,
+          "scale_y": 1.3
+        },
+        {
+          "id": "mid_2",
+          "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+          "x": 50.0,
+          "y": 20.0,
+          "scale_x": 1.2,
+          "scale_y": 1.2
+        },
+        {
+          "id": "mid_3",
+          "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+          "x": 210.0,
+          "y": -50.0,
+          "scale_x": 1.1,
+          "scale_y": 1.1
+        }
+      ]
+    },
+    {
+      "id": "foreground",
+      "parallax": 1.2,
+      "sort_mode": "none",
+      "occlusion": true,
+      "visible": true,
+      "sprites": [
+        {
+          "id": "fg_1",
+          "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+          "x": 0.0,
+          "y": 0.0,
+          "scale_x": 2.6,
+          "scale_y": 0.9
+        }
+      ]
+    }
+  ]
+}

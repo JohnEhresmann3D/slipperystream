@@ -1,3 +1,4 @@
+mod atlas;
 mod collision;
 mod controller;
 #[cfg(test)]
@@ -14,26 +15,38 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use atlas::{load_atlas_from_path, AtlasRegistry, AtlasSpriteEntry};
 use collision::{load_collision_from_path, Aabb, CollisionGrid};
 use controller::{CharacterController, ControllerInput};
 use scene::{load_scene_from_path, SceneFile, SceneWatcher, SortMode};
 use sme_core::input::{InputState, Key};
 use sme_core::time::TimeState;
-use sme_devtools::DebugOverlay;
+use sme_devtools::{DebugOverlay, OverlayStats};
 use sme_platform::window::PlatformConfig;
 use sme_render::{Camera2D, GpuContext, SpritePipeline, SpriteVertex, Texture};
 
-const SCENE_PATH: &str = "assets/scenes/m2_scene.json";
+const SCENE_PATH: &str = "assets/scenes/m4_scene.json";
 const COLLISION_PATH: &str = "assets/collision/m3_collision.json";
+const ATLAS_PATH: &str = "assets/generated/m4_sample_atlas.json";
+const STRICT_SPRITE_ID_RESOLUTION: bool = true;
 const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/test_sprite.png");
 const DEBUG_WHITE_ASSET: &str = "__debug_white";
 const PLAYER_ASSET: &str = "__player";
 
 #[derive(Debug, Clone)]
 struct DrawCall {
-    asset: String,
+    texture_key: String,
     index_start: u32,
     index_count: u32,
+}
+
+struct QuadSpec<'a> {
+    texture_key: &'a str,
+    center_x: f32,
+    center_y: f32,
+    width: f32,
+    height: f32,
+    color: [f32; 4],
 }
 
 struct GpuSpriteTexture {
@@ -56,6 +69,9 @@ struct EngineState {
     collision_path: std::path::PathBuf,
     collision_watcher: SceneWatcher,
     collision_grid: CollisionGrid,
+    atlas_path: std::path::PathBuf,
+    atlas_watcher: SceneWatcher,
+    atlas_registry: Option<AtlasRegistry>,
     character: CharacterController,
     show_collision_debug: bool,
     textures: HashMap<String, GpuSpriteTexture>,
@@ -67,6 +83,7 @@ struct EngineState {
     mesh_vertex_capacity: usize,
     mesh_index_capacity: usize,
     draw_calls: Vec<DrawCall>,
+    sprite_count: usize,
 }
 
 impl EngineState {
@@ -95,6 +112,45 @@ impl EngineState {
                 err
             );
         });
+        let atlas_path = std::path::PathBuf::from(ATLAS_PATH);
+        let atlas_watcher = SceneWatcher::new(atlas_path.clone());
+        let atlas_registry = if atlas_path.exists() {
+            match load_atlas_from_path(&atlas_path) {
+                Ok(registry) => Some(registry),
+                Err(err) => {
+                    log::error!(
+                        "Failed to load initial atlas '{}': {}",
+                        atlas_path.display(),
+                        err
+                    );
+                    None
+                }
+            }
+        } else {
+            log::warn!(
+                "Atlas metadata '{}' was not found. sprite_id references will fail to resolve.",
+                atlas_path.display()
+            );
+            None
+        };
+        if let Err(err) = validate_scene_sprite_references(&scene, atlas_registry.as_ref()) {
+            panic!(
+                "Initial scene '{}' failed sprite reference validation: {}",
+                scene_path.display(),
+                err
+            );
+        }
+        if let Some(registry) = atlas_registry.as_ref() {
+            if let Err(err) =
+                preflight_atlas_textures(&gpu.device, &gpu.queue, &sprite_pipeline, registry)
+            {
+                panic!(
+                    "Initial atlas '{}' failed texture preflight: {}",
+                    atlas_path.display(),
+                    err
+                );
+            }
+        }
 
         let mut camera = Camera2D::new(gpu.size.0, gpu.size.1);
         if let Some(scene_camera) = &scene.camera {
@@ -137,6 +193,9 @@ impl EngineState {
             collision_path,
             collision_watcher,
             collision_grid,
+            atlas_path,
+            atlas_watcher,
+            atlas_registry,
             character,
             show_collision_debug: true,
             textures: HashMap::new(),
@@ -147,8 +206,10 @@ impl EngineState {
             mesh_vertex_capacity: 0,
             mesh_index_capacity: 0,
             draw_calls: Vec::new(),
+            sprite_count: 0,
         };
 
+        // Startup order matters: load textures before building the first mesh.
         state.ensure_textures_for_scene();
         state.ensure_mesh_capacity(4, 6);
         state.rebuild_scene_mesh();
@@ -157,8 +218,14 @@ impl EngineState {
 
     fn reload_scene(&mut self, reason: &str) {
         match load_scene_from_path(&self.scene_path) {
-            Ok(scene) => {
-                self.scene = scene;
+            Ok(scene_candidate) => {
+                if let Err(err) =
+                    validate_scene_sprite_references(&scene_candidate, self.atlas_registry.as_ref())
+                {
+                    log::error!("Scene reload failed ({reason}): {err}");
+                    return;
+                }
+                self.scene = scene_candidate;
                 if let Some(scene_camera) = &self.scene.camera {
                     self.camera.position.x = scene_camera.start_x;
                     self.camera.position.y = scene_camera.start_y;
@@ -195,11 +262,76 @@ impl EngineState {
         }
     }
 
+    fn reload_atlas(&mut self, reason: &str) {
+        match load_atlas_from_path(&self.atlas_path) {
+            Ok(registry_candidate) => {
+                if let Err(err) =
+                    validate_scene_sprite_references(&self.scene, Some(&registry_candidate))
+                {
+                    log::error!("Atlas reload failed ({reason}): {err}");
+                    return;
+                }
+                if let Err(err) = preflight_atlas_textures(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &self.sprite_pipeline,
+                    &registry_candidate,
+                ) {
+                    log::error!("Atlas reload failed ({reason}): {err}");
+                    return;
+                }
+                let atlas_id = registry_candidate.atlas_id.clone();
+                self.atlas_registry = Some(registry_candidate);
+                self.ensure_textures_for_scene();
+                self.rebuild_scene_mesh();
+                log::info!("Atlas reloaded ({reason}): {}", atlas_id);
+            }
+            Err(err) => {
+                log::error!("Atlas reload failed ({reason}): {err}");
+            }
+        }
+    }
+
+    fn resolve_sprite_entry(&self, sprite: &scene::SceneSprite) -> Option<AtlasSpriteEntry> {
+        if let Some(sprite_id) = &sprite.sprite_id {
+            let Some(registry) = &self.atlas_registry else {
+                log::warn!(
+                    "Sprite '{}' references sprite_id '{}' but no atlas is loaded",
+                    sprite.id,
+                    sprite_id
+                );
+                return None;
+            };
+            let Some(entry) = registry.resolve(sprite_id) else {
+                log::warn!(
+                    "Sprite '{}' references missing sprite_id '{}' in atlas '{}'",
+                    sprite.id,
+                    sprite_id,
+                    registry.atlas_id
+                );
+                return None;
+            };
+            return Some(entry.clone());
+        }
+
+        let Some(asset) = &sprite.asset else {
+            return None;
+        };
+        Some(AtlasSpriteEntry {
+            texture_path: asset.clone(),
+            size_px: (0, 0),
+            uv: [0.0, 0.0, 1.0, 1.0],
+            pivot: (0.5, 0.5),
+        })
+    }
+
     fn ensure_textures_for_scene(&mut self) {
         let mut required_assets = HashSet::new();
         for layer in &self.scene.layers {
             for sprite in &layer.sprites {
-                required_assets.insert(sprite.asset.clone());
+                if let Some(entry) = self.resolve_sprite_entry(sprite) {
+                    required_assets.insert(entry.texture_path);
+                }
             }
         }
 
@@ -259,8 +391,11 @@ impl EngineState {
     }
 
     fn rebuild_scene_mesh(&mut self) {
+        // Build a single CPU-side mesh each frame from scene + debug overlays,
+        // then stream it into GPU buffers.
         let (vertices, indices, draw_calls) = self.build_mesh();
         self.ensure_mesh_capacity(vertices.len(), indices.len());
+        self.sprite_count = vertices.len() / 4;
         self.draw_calls = draw_calls;
 
         if !vertices.is_empty() {
@@ -280,6 +415,7 @@ impl EngineState {
         let mut indices = Vec::new();
         let mut draw_calls = Vec::new();
 
+        // Visual scene layers render back-to-front according to authored order.
         for layer in &self.scene.layers {
             if !layer.visible {
                 continue;
@@ -298,29 +434,38 @@ impl EngineState {
                 log::trace!("Rendering occlusion layer '{}'", layer.id);
             }
 
+            // Parallax is implemented as a per-layer camera-space offset.
             let parallax_offset = self.camera.position * (1.0 - layer.parallax);
             for sprite in &sprites {
-                let Some(texture) = self.textures.get(&sprite.asset) else {
+                let Some(sprite_entry) = self.resolve_sprite_entry(sprite) else {
                     log::warn!(
-                        "Skipping sprite '{}' due to missing texture '{}'",
-                        sprite.id,
-                        sprite.asset
+                        "Skipping sprite '{}' due to unresolved asset reference",
+                        sprite.id
                     );
+                    continue;
+                };
+                let Some(texture) = self.textures.get(&sprite_entry.texture_path) else {
+                    log::warn!("Skipping sprite '{}' due to missing texture", sprite.id);
                     continue;
                 };
 
                 let center_x = sprite.x + parallax_offset.x;
                 let center_y = sprite.y + parallax_offset.y;
-                let half_w = (texture.texture.size.0 as f32) * 0.5 * sprite.scale_x;
-                let half_h = (texture.texture.size.1 as f32) * 0.5 * sprite.scale_y;
+                let source_size = if sprite.sprite_id.is_some() {
+                    sprite_entry.size_px
+                } else {
+                    texture.texture.size
+                };
+                let sprite_w = source_size.0 as f32 * sprite.scale_x;
+                let sprite_h = source_size.1 as f32 * sprite.scale_y;
+                let (pivot_x, pivot_y) = sprite_entry.pivot;
+                let left = -sprite_w * pivot_x;
+                let right = sprite_w * (1.0 - pivot_x);
+                let bottom = -sprite_h * pivot_y;
+                let top = sprite_h * (1.0 - pivot_y);
                 let base_index = vertices.len() as u32;
 
-                let mut corners = [
-                    [-half_w, -half_h],
-                    [half_w, -half_h],
-                    [half_w, half_h],
-                    [-half_w, half_h],
-                ];
+                let mut corners = [[left, bottom], [right, bottom], [right, top], [left, top]];
                 let radians = sprite.rotation_deg.to_radians();
                 if radians != 0.0 {
                     let cos_r = radians.cos();
@@ -333,24 +478,25 @@ impl EngineState {
                     }
                 }
 
+                let [u0, v0, u1, v1] = sprite_entry.uv;
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[0][0], center_y + corners[0][1]],
-                    tex_coords: [0.0, 1.0],
+                    tex_coords: [u0, v1],
                     color: [1.0, 1.0, 1.0, 1.0],
                 });
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[1][0], center_y + corners[1][1]],
-                    tex_coords: [1.0, 1.0],
+                    tex_coords: [u1, v1],
                     color: [1.0, 1.0, 1.0, 1.0],
                 });
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[2][0], center_y + corners[2][1]],
-                    tex_coords: [1.0, 0.0],
+                    tex_coords: [u1, v0],
                     color: [1.0, 1.0, 1.0, 1.0],
                 });
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[3][0], center_y + corners[3][1]],
-                    tex_coords: [0.0, 0.0],
+                    tex_coords: [u0, v0],
                     color: [1.0, 1.0, 1.0, 1.0],
                 });
 
@@ -364,14 +510,11 @@ impl EngineState {
                     base_index + 3,
                 ]);
 
-                draw_calls.push(DrawCall {
-                    asset: sprite.asset.clone(),
-                    index_start: draw_start,
-                    index_count: 6,
-                });
+                push_draw_call(&mut draw_calls, &sprite_entry.texture_path, draw_start, 6);
             }
         }
 
+        // Debug collision overlay is rendered as translucent quads in world space.
         if self.show_collision_debug {
             let cell = self.collision_grid.cell_size as f32;
             for solid in self.collision_grid.solids_iter() {
@@ -381,26 +524,31 @@ impl EngineState {
                     &mut vertices,
                     &mut indices,
                     &mut draw_calls,
-                    DEBUG_WHITE_ASSET,
-                    center_x,
-                    center_y,
-                    cell,
-                    cell,
-                    [0.15, 0.9, 0.15, 0.35],
+                    QuadSpec {
+                        texture_key: DEBUG_WHITE_ASSET,
+                        center_x,
+                        center_y,
+                        width: cell,
+                        height: cell,
+                        color: [0.15, 0.9, 0.15, 0.35],
+                    },
                 );
             }
         }
 
+        // Player visualization uses a simple debug quad driven by controller AABB.
         add_quad(
             &mut vertices,
             &mut indices,
             &mut draw_calls,
-            PLAYER_ASSET,
-            self.character.aabb.center_x,
-            self.character.aabb.center_y,
-            self.character.aabb.half_w * 2.0,
-            self.character.aabb.half_h * 2.0,
-            [1.0, 0.3, 0.3, 0.9],
+            QuadSpec {
+                texture_key: PLAYER_ASSET,
+                center_x: self.character.aabb.center_x,
+                center_y: self.character.aabb.center_y,
+                width: self.character.aabb.half_w * 2.0,
+                height: self.character.aabb.half_h * 2.0,
+                color: [1.0, 0.3, 0.3, 0.9],
+            },
         );
 
         (vertices, indices, draw_calls)
@@ -506,6 +654,7 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                // Fixed-step simulation phase.
                 state.time.begin_frame();
                 let mut scene_changed = false;
                 while state.time.should_step() {
@@ -532,6 +681,7 @@ impl ApplicationHandler for App {
                     if state.input.is_just_pressed(Key::R) {
                         state.reload_scene("manual trigger (R)");
                         state.reload_collision("manual trigger (R)");
+                        state.reload_atlas("manual trigger (R)");
                         scene_changed = true;
                     } else if state.scene_watcher.should_reload() {
                         state.reload_scene("file watcher");
@@ -539,8 +689,12 @@ impl ApplicationHandler for App {
                     } else if state.collision_watcher.should_reload() {
                         state.reload_collision("file watcher");
                         scene_changed = true;
+                    } else if state.atlas_watcher.should_reload() {
+                        state.reload_atlas("file watcher");
+                        scene_changed = true;
                     }
 
+                    // Controller input is turned into deterministic simulation intent.
                     let dt = state.time.fixed_dt as f32;
                     let mut move_x: f32 = 0.0;
                     if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
@@ -570,6 +724,7 @@ impl ApplicationHandler for App {
                     state.rebuild_scene_mesh();
                 }
 
+                // Render phase reads finalized simulation state from this frame.
                 let camera_uniform = state.camera.build_uniform();
                 state.gpu.queue.write_buffer(
                     &state.camera_buffer,
@@ -581,8 +736,16 @@ impl ApplicationHandler for App {
                     return;
                 };
 
-                let (egui_primitives, egui_textures_delta) =
-                    state.debug_overlay.prepare(&state.window, &state.time);
+                let predicted_bind_count = count_texture_binds(&state.draw_calls);
+                let (egui_primitives, egui_textures_delta) = state.debug_overlay.prepare(
+                    &state.window,
+                    &state.time,
+                    Some(OverlayStats {
+                        draw_calls: state.draw_calls.len() as u32,
+                        atlas_binds: predicted_bind_count as u32,
+                        sprite_count: state.sprite_count as u32,
+                    }),
+                );
                 let screen_descriptor = egui_wgpu::ScreenDescriptor {
                     size_in_pixels: [state.gpu.size.0, state.gpu.size.1],
                     pixels_per_point: state.window.scale_factor() as f32,
@@ -597,6 +760,7 @@ impl ApplicationHandler for App {
                         });
 
                 {
+                    let mut last_bound_texture_key: Option<&str> = None;
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Scene Render Pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -623,8 +787,11 @@ impl ApplicationHandler for App {
                         .set_index_buffer(state.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                     for draw in &state.draw_calls {
-                        if let Some(texture) = state.textures.get(&draw.asset) {
-                            render_pass.set_bind_group(1, &texture.bind_group, &[]);
+                        if let Some(texture) = state.textures.get(&draw.texture_key) {
+                            if last_bound_texture_key != Some(draw.texture_key.as_str()) {
+                                render_pass.set_bind_group(1, &texture.bind_group, &[]);
+                                last_bound_texture_key = Some(draw.texture_key.as_str());
+                            }
                             render_pass.draw_indexed(
                                 draw.index_start..(draw.index_start + draw.index_count),
                                 0,
@@ -701,36 +868,31 @@ fn add_quad(
     vertices: &mut Vec<SpriteVertex>,
     indices: &mut Vec<u32>,
     draw_calls: &mut Vec<DrawCall>,
-    asset: &str,
-    center_x: f32,
-    center_y: f32,
-    width: f32,
-    height: f32,
-    color: [f32; 4],
+    spec: QuadSpec<'_>,
 ) {
-    let half_w = width * 0.5;
-    let half_h = height * 0.5;
+    let half_w = spec.width * 0.5;
+    let half_h = spec.height * 0.5;
     let base_index = vertices.len() as u32;
 
     vertices.push(SpriteVertex {
-        position: [center_x - half_w, center_y - half_h],
+        position: [spec.center_x - half_w, spec.center_y - half_h],
         tex_coords: [0.0, 1.0],
-        color,
+        color: spec.color,
     });
     vertices.push(SpriteVertex {
-        position: [center_x + half_w, center_y - half_h],
+        position: [spec.center_x + half_w, spec.center_y - half_h],
         tex_coords: [1.0, 1.0],
-        color,
+        color: spec.color,
     });
     vertices.push(SpriteVertex {
-        position: [center_x + half_w, center_y + half_h],
+        position: [spec.center_x + half_w, spec.center_y + half_h],
         tex_coords: [1.0, 0.0],
-        color,
+        color: spec.color,
     });
     vertices.push(SpriteVertex {
-        position: [center_x - half_w, center_y + half_h],
+        position: [spec.center_x - half_w, spec.center_y + half_h],
         tex_coords: [0.0, 0.0],
-        color,
+        color: spec.color,
     });
 
     let draw_start = indices.len() as u32;
@@ -743,10 +905,26 @@ fn add_quad(
         base_index + 3,
     ]);
 
+    push_draw_call(draw_calls, spec.texture_key, draw_start, 6);
+}
+
+fn push_draw_call(
+    draw_calls: &mut Vec<DrawCall>,
+    texture_key: &str,
+    index_start: u32,
+    index_count: u32,
+) {
+    if let Some(last) = draw_calls.last_mut() {
+        let contiguous = last.index_start + last.index_count == index_start;
+        if last.texture_key == texture_key && contiguous {
+            last.index_count += index_count;
+            return;
+        }
+    }
     draw_calls.push(DrawCall {
-        asset: asset.to_string(),
-        index_start: draw_start,
-        index_count: 6,
+        texture_key: texture_key.to_string(),
+        index_start,
+        index_count,
     });
 }
 
@@ -772,6 +950,50 @@ fn load_texture_asset(
     }
 }
 
+fn load_texture_asset_strict(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &SpritePipeline,
+    asset_path: &str,
+) -> Result<GpuSpriteTexture, String> {
+    let bytes = std::fs::read(asset_path)
+        .map_err(|e| format!("Failed to read texture '{}': {e}", asset_path))?;
+    let texture = Texture::from_bytes(device, queue, &bytes, asset_path);
+    let bind_group = pipeline.create_texture_bind_group(device, &texture);
+    Ok(GpuSpriteTexture {
+        texture,
+        bind_group,
+    })
+}
+
+fn preflight_atlas_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &SpritePipeline,
+    atlas_registry: &AtlasRegistry,
+) -> Result<(), String> {
+    let mut required_textures = std::collections::HashSet::new();
+    for entry in atlas_registry.sprite_entries.values() {
+        required_textures.insert(entry.texture_path.as_str());
+    }
+    for texture_path in required_textures {
+        let _ = load_texture_asset_strict(device, queue, pipeline, texture_path)?;
+    }
+    Ok(())
+}
+
+fn count_texture_binds(draw_calls: &[DrawCall]) -> usize {
+    let mut binds = 0usize;
+    let mut current: Option<&str> = None;
+    for draw in draw_calls {
+        if current != Some(draw.texture_key.as_str()) {
+            current = Some(draw.texture_key.as_str());
+            binds += 1;
+        }
+    }
+    binds
+}
+
 fn map_key(key_code: KeyCode) -> Option<Key> {
     match key_code {
         KeyCode::ArrowLeft => Some(Key::Left),
@@ -789,6 +1011,37 @@ fn map_key(key_code: KeyCode) -> Option<Key> {
         KeyCode::KeyR => Some(Key::R),
         _ => None,
     }
+}
+
+fn validate_scene_sprite_references(
+    scene: &SceneFile,
+    atlas_registry: Option<&AtlasRegistry>,
+) -> Result<(), String> {
+    if !STRICT_SPRITE_ID_RESOLUTION {
+        return Ok(());
+    }
+
+    for layer in &scene.layers {
+        for sprite in &layer.sprites {
+            let Some(sprite_id) = &sprite.sprite_id else {
+                continue;
+            };
+            let registry = atlas_registry.ok_or_else(|| {
+                format!(
+                    "sprite '{}' references sprite_id '{}' but no atlas metadata is loaded",
+                    sprite.id, sprite_id
+                )
+            })?;
+            if registry.resolve(sprite_id).is_none() {
+                return Err(format!(
+                    "sprite '{}' references missing sprite_id '{}' in atlas '{}'",
+                    sprite.id, sprite_id, registry.atlas_id
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn main() {

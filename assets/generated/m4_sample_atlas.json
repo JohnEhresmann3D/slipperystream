@@ -1,0 +1,32 @@
+{
+  "version": "0.1",
+  "atlas_id": "m4_sample_atlas",
+  "texture": {
+    "path": "assets/generated/m4_sample_atlas.png",
+    "width": 128,
+    "height": 128
+  },
+  "sprites": [
+    {
+      "sprite_id": "2a963259-6bf0-5497-9410-9d2e6691992f",
+      "name": "test_sprite",
+      "source_path": "assets/textures/test_sprite.png",
+      "rect_px": {
+        "x": 0,
+        "y": 0,
+        "w": 64,
+        "h": 64
+      },
+      "uv": {
+        "u0": 0.0,
+        "v0": 0.0,
+        "u1": 0.5,
+        "v1": 0.5
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    }
+  ]
+}

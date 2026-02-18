@@ -391,7 +391,91 @@ Risk:
 
 ---
 
-## 11. Lua Integration Plan (Milestone-Aligned)
+### M4: Atlas Packer + Stable Asset IDs
+
+Goal: Prove a stable asset pipeline that supports batching and safe iteration without brittle path references.
+
+Acceptance Criteria:
+
+- Atlas packer runs as a standalone CLI tool
+- Packs multiple source sprites into one or more atlas textures
+- Emits metadata with stable sprite IDs and UV mappings
+- Runtime loads atlas metadata and resolves sprite references by stable ID
+- Scene rendering batches sprites by atlas where possible
+- Atlas metadata/texture reload path exists and does not corrupt running state
+- Debug overlay reports atlas count/binds and draw call count
+
+Key Deliverables:
+
+1. Atlas metadata schema - finalize in `docs/planning/asset_formats_v0.1.md`
+2. Atlas packer CLI - input folder/manifest -> atlas image + metadata JSON
+3. Runtime atlas loader - parse metadata, upload textures, register stable IDs
+4. Sprite ID resolver - scene/runtime references stable IDs instead of raw file paths
+5. Batch renderer integration - group draws by atlas/texture bindings
+6. Sample atlas output - include at least one generated atlas + metadata artifact
+
+Pre-requisites:
+
+- M1 renderer foundation is complete
+- M2 scene loader/render path is stable enough to switch sprite reference mode
+- M4 atlas metadata schema is locked before implementation starts
+
+Risk:
+
+- Rect packing and padding mistakes can cause texture bleeding artifacts
+- Asset ID migration (path -> stable ID) can break existing sample scene data
+- Hot reload and GPU resource replacement can introduce invalid handles if not frame-boundary safe
+
+---
+
+## 11. M4 Execution Plan
+
+### Phase 0 - Format Lock + ID Policy
+
+- Finalize atlas metadata schema and validation rules in `docs/planning/asset_formats_v0.1.md`
+- Choose and document stable ID policy (UUID string format for v0.1 metadata)
+- Define migration rule for scene sprite references (`asset` path -> `sprite_id`)
+
+### Phase 1 - Atlas Build Tool
+
+- Implement packer CLI entrypoint in devtools/tools crate
+- Support deterministic packing output for unchanged inputs
+- Write atlas PNG and metadata JSON atomically to avoid partial files
+
+### Phase 2 - Runtime Integration
+
+- Add atlas metadata loader and runtime registry (`sprite_id` -> atlas rect data)
+- Update scene loader/runtime to resolve sprite instances through stable IDs
+- Integrate batch submission path to minimize atlas binds and draw calls
+
+### Phase 3 - Reload + Diagnostics
+
+- Add safe-frame-boundary atlas reload trigger
+- On reload parse/build failure, keep previous valid atlas assets live
+- Expose bind/draw counters in debug overlay for quick batching verification
+
+### Definition of Done
+
+- All M4 acceptance criteria pass on sample content
+- Existing sample scene renders correctly using stable sprite IDs
+- Atlas build + runtime load path is covered by smoke tests
+
+### Failure Modes to Watch
+
+- UV mismatches from off-by-one atlas rect calculations
+- Non-deterministic packing output causing noisy diffs and cache churn
+- Missing ID references causing runtime sprite dropouts
+
+### Validation Steps
+
+1. Build atlas twice with unchanged inputs and compare output metadata deterministically
+2. Render sample scene and verify visual parity before/after ID migration
+3. Hot reload atlas metadata/texture while running and confirm no crash or corrupted sprites
+4. Confirm debug overlay shows reduced atlas binds when many sprites share an atlas
+
+---
+
+## 12. Lua Integration Plan (Milestone-Aligned)
 
 Objective:
 Enable gameplay authoring in Lua while keeping engine determinism and performance guarantees.

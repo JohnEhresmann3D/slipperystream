@@ -56,14 +56,14 @@ Automated dependency setup (Windows PowerShell):
 ## Prototype Readiness
 
 You can prototype platformer gameplay now with:
-- Layered scene authoring from JSON (`assets/scenes/m2_scene.json`)
+- Layered scene authoring from JSON (`assets/scenes/m4_scene.json`)
 - Collision underlay from JSON (`assets/collision/m3_collision.json`)
 - Deterministic movement + jump controller
 - Collision debug visualization
 - Determinism replay tests (`assets/tests/m3_replay_input.json`)
+- Atlas metadata + `sprite_id` scene references (`assets/generated/m4_sample_atlas.json`)
 
 Not ready yet (planned next milestones):
-- Atlas/stable asset-ID pipeline (M4)
 - Lua-authored gameplay path (M4 foundation, M5 production path)
 
 ## Controls (Current Demo)
@@ -71,6 +71,7 @@ Not ready yet (planned next milestones):
 - `A D` or left/right arrows: move character
 - `Space`, `W`, or up arrow: jump
 - `R`: reload scene and collision data from disk
+- `R`: reload scene, collision, and atlas metadata from disk
 - `F3`: toggle debug overlay
 - `F4`: toggle collision grid debug draw
 - `Esc`: quit
@@ -78,7 +79,7 @@ Not ready yet (planned next milestones):
 ## Build A Prototype Level
 
 1. Edit scene visuals:
-   - `assets/scenes/m2_scene.json`
+   - `assets/scenes/m4_scene.json`
 2. Edit collision layout:
    - `assets/collision/m3_collision.json`
 3. Run:
@@ -91,6 +92,16 @@ cargo run -p sme_game
    - Character movement and jumping feel correct
    - Collision matches intended geometry (`F4` debug on)
    - No obvious jitter or tunneling
+
+## Atlas Packer (M4)
+
+Build an atlas and metadata JSON from a folder of PNG sprites:
+
+```powershell
+cargo run -p sme_atlas_packer -- assets/textures assets/generated/m4_sample_atlas.png assets/generated/m4_sample_atlas.json 128
+```
+
+Then reference sprites in scene JSON using `sprite_id` values from the generated metadata file.
 
 ## Project Layout
 
@@ -131,7 +142,7 @@ cargo run -p sme_game
 
 ## M3 Collision Files
 
-- Scene file: `assets/scenes/m2_scene.json`
+- Scene file: `assets/scenes/m4_scene.json`
 - Collision file: `assets/collision/m3_collision.json`
 - Replay input sample: `assets/tests/m3_replay_input.json`
 
@@ -149,8 +160,8 @@ cargo test -p sme_game
 
 ## Roadmap Notes
 
-- Scene JSON currently uses direct asset paths for M2 speed.
-- Stable asset ID wiring is planned in M4.
+- Scene JSON supports both `asset` paths and `sprite_id` references.
+- Atlas packing now ships via `sme_atlas_packer`.
 - Full hot reload coverage across scene/collision/atlas is finalized in M5.
 
 ## Contributing (Starter)

@@ -22,6 +22,7 @@ pub struct ReplayFrame {
 
 impl ReplaySequence {
     pub fn expanded_inputs(&self) -> Vec<ControllerInput> {
+        // Replay format supports simple run-length compression via `repeat`.
         let mut out = Vec::new();
         for frame in &self.frames {
             for _ in 0..frame.repeat.max(1) {

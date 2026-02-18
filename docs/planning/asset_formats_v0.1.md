@@ -210,6 +210,106 @@ Purpose: Define gameplay-truth collision independent from scene rendering layers
 
 ---
 
-## 3. Atlas Metadata Format (M4 Placeholder)
+## 3. Atlas Metadata Format (M4 Required)
 
-Reserved for M4 finalization.
+Purpose: Define deterministic atlas output and stable sprite ID resolution for runtime rendering.
+
+### 3.1 Top-Level Shape
+
+```json
+{
+  "version": "0.1",
+  "atlas_id": "atlas_demo_main",
+  "texture": {
+    "path": "assets/generated/atlas_demo_main.png",
+    "width": 1024,
+    "height": 1024
+  },
+  "sprites": []
+}
+```
+
+### 3.2 Field Definitions
+
+- `version` (string, required): Schema version. Must be `0.1`.
+- `atlas_id` (string, required): Stable ID for this atlas artifact.
+- `texture` (object, required):
+  - `path` (string, required): Runtime-loadable texture path.
+  - `width` (integer, required): Atlas texture width in pixels.
+  - `height` (integer, required): Atlas texture height in pixels.
+- `sprites` (array, required): Sprite entries packed into this atlas.
+
+### 3.3 Sprite Entry Shape
+
+```json
+{
+  "sprite_id": "7f3e9f32-08cc-4ac8-b38d-45deed7b6a10",
+  "name": "smiley_large",
+  "source_path": "assets/sprites/smiley_large.png",
+  "rect_px": { "x": 0, "y": 0, "w": 128, "h": 128 },
+  "uv": { "u0": 0.0, "v0": 0.0, "u1": 0.125, "v1": 0.125 },
+  "pivot": { "x": 0.5, "y": 0.5 }
+}
+```
+
+- `sprite_id` (string, required): Stable identifier (UUID string) used by scene/runtime references.
+- `name` (string, optional): Human-readable label for debugging.
+- `source_path` (string, required): Original source texture path used for packing.
+- `rect_px` (object, required): Packed rectangle in atlas pixel space.
+  - `x`, `y` (integer, required): Top-left pixel coordinate.
+  - `w`, `h` (integer, required): Sprite dimensions in pixels.
+- `uv` (object, required): Normalized UV rectangle in atlas texture space.
+  - `u0`, `v0`, `u1`, `v1` (number, required) in `0.0..1.0`.
+- `pivot` (object, optional, default `{ "x": 0.5, "y": 0.5 }`): Normalized anchor point.
+
+### 3.4 Scene Reference Rule (M4 Migration)
+
+- Scene sprite instances should transition from:
+  - `asset: "assets/sprites/tree.png"` (M2 placeholder path)
+- To:
+  - `sprite_id: "<uuid>"` (M4 stable runtime reference)
+- Runtime lookup contract:
+  - `sprite_id` must resolve through loaded atlas metadata.
+  - Missing `sprite_id` is a load error (fail scene load in strict mode).
+
+### 3.5 Validation Rules
+
+- `texture.width > 0` and `texture.height > 0`.
+- Each `sprite_id` must be unique within metadata.
+- `rect_px` must be fully inside atlas bounds.
+- `rect_px.w > 0` and `rect_px.h > 0`.
+- UV values must map to `rect_px` within float tolerance.
+- `u0 < u1` and `v0 < v1`.
+- Unknown fields are ignored in v0.1, but warn in debug logs.
+
+### 3.6 Canonical M4 Example
+
+```json
+{
+  "version": "0.1",
+  "atlas_id": "m4_sample_atlas",
+  "texture": {
+    "path": "assets/generated/m4_sample_atlas.png",
+    "width": 512,
+    "height": 512
+  },
+  "sprites": [
+    {
+      "sprite_id": "7f3e9f32-08cc-4ac8-b38d-45deed7b6a10",
+      "name": "smiley_large",
+      "source_path": "assets/sprites/smiley_large.png",
+      "rect_px": { "x": 0, "y": 0, "w": 128, "h": 128 },
+      "uv": { "u0": 0.0, "v0": 0.0, "u1": 0.25, "v1": 0.25 },
+      "pivot": { "x": 0.5, "y": 0.5 }
+    },
+    {
+      "sprite_id": "08df2a4c-8dc0-4a5c-84ba-ef1e4ec4f82b",
+      "name": "smiley_small",
+      "source_path": "assets/sprites/smiley_small.png",
+      "rect_px": { "x": 128, "y": 0, "w": 64, "h": 64 },
+      "uv": { "u0": 0.25, "v0": 0.0, "u1": 0.375, "v1": 0.125 },
+      "pivot": { "x": 0.5, "y": 0.5 }
+    }
+  ]
+}
+```
