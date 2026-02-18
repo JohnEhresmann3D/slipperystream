@@ -1,11 +1,29 @@
 use sme_core::time::TimeState;
 use winit::window::Window;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OverlayStats {
     pub draw_calls: u32,
     pub atlas_binds: u32,
     pub sprite_count: u32,
+    /// Estimated GPU memory usage in megabytes
+    pub memory_estimate_mb: f32,
+    /// Current fidelity tier label (e.g. "Tier 0 (Mobile)")
+    pub tier_label: String,
+    /// Lua runtime status label (e.g. "Lua: loaded")
+    pub lua_status_label: String,
+    /// Whether simulation is paused
+    pub paused: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OverlayActions {
+    /// User clicked the tier cycle button
+    pub cycle_tier: bool,
+    /// User clicked the pause toggle
+    pub toggle_pause: bool,
+    /// User clicked the single-step button (advance one fixed step while paused)
+    pub single_step: bool,
 }
 
 pub struct DebugOverlay {
@@ -59,7 +77,12 @@ impl DebugOverlay {
         window: &Window,
         time: &TimeState,
         stats: Option<OverlayStats>,
-    ) -> (Vec<egui::ClippedPrimitive>, egui::TexturesDelta) {
+    ) -> (
+        Vec<egui::ClippedPrimitive>,
+        egui::TexturesDelta,
+        OverlayActions,
+    ) {
+        let mut actions = OverlayActions::default();
         let raw_input = self.egui_winit_state.take_egui_input(window);
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             if self.visible {
@@ -71,11 +94,41 @@ impl DebugOverlay {
                         ui.label(format!("Steps this frame: {}", time.steps_this_frame));
                         ui.label(format!("Total steps: {}", time.fixed_step_count));
                         ui.label(format!("Frame: {}", time.frame_count));
-                        if let Some(stats) = stats {
+                        if let Some(ref stats) = stats {
                             ui.separator();
                             ui.label(format!("Draw calls: {}", stats.draw_calls));
                             ui.label(format!("Atlas binds: {}", stats.atlas_binds));
                             ui.label(format!("Sprites: {}", stats.sprite_count));
+                            ui.label(format!("Memory: {:.1} MB", stats.memory_estimate_mb));
+                        }
+
+                        // --- M5: Fidelity Tier ---
+                        if let Some(ref stats) = stats {
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Fidelity: {}", stats.tier_label));
+                                if ui.button("Cycle").clicked() {
+                                    actions.cycle_tier = true;
+                                }
+                            });
+
+                            // --- M5: Lua Status ---
+                            ui.label(&stats.lua_status_label);
+
+                            // --- M5: Simulation Controls ---
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                let pause_label = if stats.paused { "Resume" } else { "Pause" };
+                                if ui.button(pause_label).clicked() {
+                                    actions.toggle_pause = true;
+                                }
+                                if stats.paused && ui.button("Step").clicked() {
+                                    actions.single_step = true;
+                                }
+                            });
+                            if stats.paused {
+                                ui.label("\u{23f8} PAUSED");
+                            }
                         }
                     });
             }
@@ -88,7 +141,7 @@ impl DebugOverlay {
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-        (primitives, full_output.textures_delta)
+        (primitives, full_output.textures_delta, actions)
     }
 
     /// Upload textures and update buffers. Call before creating the egui render pass.
