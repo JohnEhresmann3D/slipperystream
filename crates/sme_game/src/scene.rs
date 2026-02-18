@@ -23,6 +23,10 @@ pub struct SceneFile {
     pub version: String,
     pub scene_id: String,
     pub camera: Option<SceneCamera>,
+    #[serde(default)]
+    pub atlases: Vec<String>,
+    #[serde(default)]
+    pub animations: Vec<String>,
     pub layers: Vec<SceneLayer>,
 }
 
@@ -64,6 +68,10 @@ pub struct SceneSprite {
     pub asset: Option<String>,
     #[serde(default)]
     pub sprite_id: Option<String>,
+    #[serde(default)]
+    pub animation: Option<String>,
+    #[serde(default)]
+    pub animation_source: Option<String>,
     pub x: f32,
     pub y: f32,
     #[serde(default)]
@@ -118,6 +126,12 @@ pub fn load_scene_from_path(scene_path: &Path) -> Result<SceneFile, String> {
 fn validate_scene(scene: &SceneFile) -> Result<(), String> {
     // Validation is intentionally strict on identifiers so loader/runtime paths
     // can assume uniqueness without extra defensive branching.
+    if scene.version != "0.1" && scene.version != "0.2" {
+        return Err(format!(
+            "Scene validation failed: unsupported version '{}'",
+            scene.version
+        ));
+    }
     if scene.layers.is_empty() {
         return Err("Scene validation failed: layers array is empty".to_string());
     }
@@ -360,6 +374,104 @@ mod tests {
             !watcher.should_reload(),
             "without changes, second poll should not reload"
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_scene_v02_with_atlases_and_animations() {
+        let path = temp_file_path("v02_full");
+        let json = r#"
+        {
+          "version": "0.2",
+          "scene_id": "test_v02",
+          "atlases": [
+            "assets/generated/chars_atlas.json",
+            "assets/generated/env_atlas.json"
+          ],
+          "animations": [
+            "assets/animations/hero_animations.json"
+          ],
+          "layers": [
+            {
+              "id": "gameplay",
+              "parallax": 1.0,
+              "sprites": [
+                {
+                  "id": "player",
+                  "sprite_id": "uuid-aaa",
+                  "animation": "idle",
+                  "animation_source": "hero_animations",
+                  "x": 0.0, "y": 0.0
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+        write_scene_file(&path, json);
+        let scene = load_scene_from_path(&path).expect("v0.2 scene should load");
+        assert_eq!(scene.version, "0.2");
+        assert_eq!(scene.atlases.len(), 2);
+        assert_eq!(scene.animations.len(), 1);
+
+        let sprite = &scene.layers[0].sprites[0];
+        assert_eq!(sprite.animation.as_deref(), Some("idle"));
+        assert_eq!(sprite.animation_source.as_deref(), Some("hero_animations"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_scene_v01_still_parses_with_new_optional_fields() {
+        let path = temp_file_path("v01_compat");
+        let json = r#"
+        {
+          "version": "0.1",
+          "scene_id": "legacy",
+          "layers": [
+            {
+              "id": "bg",
+              "parallax": 0.5,
+              "sprites": [
+                { "id": "s1", "asset": "assets/textures/test_sprite.png", "x": 0.0, "y": 0.0 }
+              ]
+            }
+          ]
+        }
+        "#;
+        write_scene_file(&path, json);
+        let scene = load_scene_from_path(&path).expect("v0.1 should still parse");
+        assert_eq!(scene.version, "0.1");
+        assert!(scene.atlases.is_empty());
+        assert!(scene.animations.is_empty());
+        assert!(scene.layers[0].sprites[0].animation.is_none());
+        assert!(scene.layers[0].sprites[0].animation_source.is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_scene_rejects_unsupported_version() {
+        let path = temp_file_path("bad_version");
+        let json = r#"
+        {
+          "version": "9.9",
+          "scene_id": "future",
+          "layers": [
+            {
+              "id": "bg",
+              "parallax": 1.0,
+              "sprites": [
+                { "id": "s1", "asset": "assets/textures/test_sprite.png", "x": 0.0, "y": 0.0 }
+              ]
+            }
+          ]
+        }
+        "#;
+        write_scene_file(&path, json);
+        let err = load_scene_from_path(&path).expect_err("unsupported version should fail");
+        assert!(err.contains("unsupported version"));
 
         let _ = fs::remove_file(path);
     }
