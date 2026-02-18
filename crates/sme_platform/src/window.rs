@@ -1,3 +1,9 @@
+//! Platform window creation.
+//!
+//! Thin wrapper around winit that applies `PlatformConfig` defaults. The window
+//! is created lazily when the event loop calls `ApplicationHandler::resumed`
+//! and returned as `Arc<Window>` so both the GPU surface and egui can share it.
+
 use std::sync::Arc;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};

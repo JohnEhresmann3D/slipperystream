@@ -14,19 +14,19 @@ impl SpriteVertex {
             attributes: &[
                 // position
                 wgpu::VertexAttribute {
-                    offset: 0,
+                    offset: std::mem::offset_of!(SpriteVertex, position) as wgpu::BufferAddress,
                     shader_location: 0,
                     format: wgpu::VertexFormat::Float32x2,
                 },
                 // tex_coords
                 wgpu::VertexAttribute {
-                    offset: 8,
+                    offset: std::mem::offset_of!(SpriteVertex, tex_coords) as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x2,
                 },
                 // color
                 wgpu::VertexAttribute {
-                    offset: 16,
+                    offset: std::mem::offset_of!(SpriteVertex, color) as wgpu::BufferAddress,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32x4,
                 },

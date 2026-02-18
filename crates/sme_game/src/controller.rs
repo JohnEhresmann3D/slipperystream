@@ -1,3 +1,14 @@
+//! Character controller: translates player intents into physics-resolved movement.
+//!
+//! This is an intent-driven controller, not a direct-mutation one. Each fixed
+//! step receives a `ControllerInput` (move direction + jump), applies acceleration,
+//! gravity, and friction, then delegates to `CollisionGrid::move_and_collide_detailed`
+//! for slide-based collision resolution.
+//!
+//! Grounded state is determined entirely from collision contact flags (not from
+//! position heuristics like "is y near the floor?"). This keeps the controller
+//! correct regardless of level geometry shape.
+
 use crate::collision::{Aabb, CollisionGrid, CollisionMoveResult};
 
 #[derive(Debug, Clone, Copy)]
@@ -148,6 +159,9 @@ impl CharacterController {
     }
 }
 
+/// Linearly move `current` toward `target` by at most `max_delta`.
+/// Used for smooth acceleration and friction instead of instant velocity
+/// snapping, which would feel jerky at 60 Hz fixed step.
 fn move_towards(current: f32, target: f32, max_delta: f32) -> f32 {
     if (target - current).abs() <= max_delta {
         target

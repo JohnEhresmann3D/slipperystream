@@ -1,6 +1,24 @@
+//! Saturday Morning Engine -- main loop and application entry point.
+//!
+//! Architecture: winit drives the event loop via `ApplicationHandler`. All simulation
+//! runs inside `RedrawRequested` using a **fixed-timestep** model (see `TimeState`):
+//!
+//!   1. `begin_frame()` -- measure wall-clock delta, feed accumulator
+//!   2. `while should_step()` -- consume fixed-dt slices for deterministic simulation
+//!   3. Rebuild the sprite mesh from scene + debug overlays
+//!   4. Upload camera uniform, issue draw calls, composite egui overlay
+//!
+//! The engine uses a **Lua-first, Rust-fallback** controller pattern: each fixed step
+//! asks Lua for a movement intent; if Lua is unavailable (no script, parse error, etc.)
+//! an identical Rust controller takes over seamlessly.
+//!
+//! Hot reload: scene JSON, collision JSON, atlas metadata, and Lua scripts are all
+//! watched via mtime polling and reloaded at frame boundaries (between fixed steps).
+
 mod atlas;
 mod collision;
 mod controller;
+mod lua_bridge;
 #[cfg(test)]
 mod replay;
 mod scene;
@@ -18,13 +36,16 @@ use winit::window::{Window, WindowId};
 use atlas::{load_atlas_from_path, AtlasRegistry, AtlasSpriteEntry};
 use collision::{load_collision_from_path, Aabb, CollisionGrid};
 use controller::{CharacterController, ControllerInput};
+use lua_bridge::{ActorSnapshot, InputSnapshot, LuaBridge};
 use scene::{load_scene_from_path, SceneFile, SceneWatcher, SortMode};
 use sme_core::input::{InputState, Key};
+use sme_core::tier::FidelityTier;
 use sme_core::time::TimeState;
 use sme_devtools::{DebugOverlay, OverlayStats};
 use sme_platform::window::PlatformConfig;
 use sme_render::{Camera2D, GpuContext, SpritePipeline, SpriteVertex, Texture};
 
+const LUA_SCRIPT_PATH: &str = "assets/scripts/controller.lua";
 const SCENE_PATH: &str = "assets/scenes/m4_scene.json";
 const COLLISION_PATH: &str = "assets/collision/m3_collision.json";
 const ATLAS_PATH: &str = "assets/generated/m4_sample_atlas.json";
@@ -33,9 +54,12 @@ const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/t
 const DEBUG_WHITE_ASSET: &str = "__debug_white";
 const PLAYER_ASSET: &str = "__player";
 
+/// A contiguous run of indices that share the same texture binding.
+/// Draw calls are merged when consecutive quads use the same texture,
+/// minimizing GPU bind-group switches during the render pass.
 #[derive(Debug, Clone)]
 struct DrawCall {
-    texture_key: String,
+    texture_key: Arc<str>,
     index_start: u32,
     index_count: u32,
 }
@@ -54,6 +78,13 @@ struct GpuSpriteTexture {
     bind_group: wgpu::BindGroup,
 }
 
+/// All mutable engine state lives here. Constructed lazily in `ApplicationHandler::resumed`
+/// once the window and GPU surface are available.
+///
+/// Ownership is split into three conceptual groups:
+///  - **Core systems** (time, input, camera) -- updated every frame
+///  - **Content** (scene, collision, atlas, textures) -- loaded from disk, hot-reloadable
+///  - **GPU resources** (vertex/index/camera buffers, draw calls) -- rebuilt when content changes
 struct EngineState {
     window: Arc<Window>,
     gpu: GpuContext,
@@ -63,6 +94,7 @@ struct EngineState {
     sprite_pipeline: SpritePipeline,
     debug_overlay: DebugOverlay,
 
+    // --- Hot-reloadable content -------------------------------------------------
     scene_path: std::path::PathBuf,
     scene_watcher: SceneWatcher,
     scene: SceneFile,
@@ -74,8 +106,15 @@ struct EngineState {
     atlas_registry: Option<AtlasRegistry>,
     character: CharacterController,
     show_collision_debug: bool,
-    textures: HashMap<String, GpuSpriteTexture>,
+    tier: FidelityTier,
+    lua_bridge: LuaBridge,
+    paused: bool,
+    single_step_requested: bool,
+    textures: HashMap<Arc<str>, GpuSpriteTexture>,
 
+    // --- Per-frame GPU mesh state -----------------------------------------------
+    // The sprite mesh is rebuilt on the CPU each frame, then streamed into these
+    // GPU buffers. Buffers grow (power-of-two) but never shrink.
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
@@ -198,6 +237,10 @@ impl EngineState {
             atlas_registry,
             character,
             show_collision_debug: true,
+            tier: FidelityTier::default(),
+            lua_bridge: LuaBridge::new(std::path::PathBuf::from(LUA_SCRIPT_PATH)),
+            paused: false,
+            single_step_requested: false,
             textures: HashMap::new(),
             vertex_buffer,
             index_buffer,
@@ -292,6 +335,9 @@ impl EngineState {
         }
     }
 
+    /// Resolve a scene sprite to its atlas entry. Lookup chain:
+    ///  1. If `sprite_id` is set, look it up in the atlas registry (stable hash ID).
+    ///  2. Otherwise fall back to the raw `asset` path (legacy/direct-texture mode).
     fn resolve_sprite_entry(&self, sprite: &scene::SceneSprite) -> Option<AtlasSpriteEntry> {
         if let Some(sprite_id) = &sprite.sprite_id {
             let Some(registry) = &self.atlas_registry else {
@@ -336,7 +382,7 @@ impl EngineState {
         }
 
         for asset_path in required_assets {
-            if self.textures.contains_key(&asset_path) {
+            if self.textures.contains_key(asset_path.as_str()) {
                 continue;
             }
             let texture = load_texture_asset(
@@ -345,7 +391,7 @@ impl EngineState {
                 &self.sprite_pipeline,
                 &asset_path,
             );
-            self.textures.insert(asset_path, texture);
+            self.textures.insert(Arc::from(asset_path), texture);
         }
 
         if !self.textures.contains_key(DEBUG_WHITE_ASSET) {
@@ -361,7 +407,7 @@ impl EngineState {
                 .sprite_pipeline
                 .create_texture_bind_group(&self.gpu.device, &texture);
             self.textures.insert(
-                DEBUG_WHITE_ASSET.to_string(),
+                Arc::from(DEBUG_WHITE_ASSET),
                 GpuSpriteTexture {
                     texture,
                     bind_group,
@@ -381,13 +427,26 @@ impl EngineState {
                 .sprite_pipeline
                 .create_texture_bind_group(&self.gpu.device, &texture);
             self.textures.insert(
-                PLAYER_ASSET.to_string(),
+                Arc::from(PLAYER_ASSET),
                 GpuSpriteTexture {
                     texture,
                     bind_group,
                 },
             );
         }
+    }
+
+    fn estimate_memory_mb(&self) -> f32 {
+        let mut bytes: usize = 0;
+        // Texture memory (width * height * 4 bytes per pixel)
+        for tex in self.textures.values() {
+            let (w, h) = tex.texture.size;
+            bytes += (w as usize) * (h as usize) * 4;
+        }
+        // GPU buffer memory
+        bytes += self.mesh_vertex_capacity * std::mem::size_of::<SpriteVertex>();
+        bytes += self.mesh_index_capacity * std::mem::size_of::<u32>();
+        bytes as f32 / (1024.0 * 1024.0)
     }
 
     fn rebuild_scene_mesh(&mut self) {
@@ -411,9 +470,23 @@ impl EngineState {
     }
 
     fn build_mesh(&self) -> (Vec<SpriteVertex>, Vec<u32>, Vec<DrawCall>) {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let mut draw_calls = Vec::new();
+        // Tier2 gets a subtle warm color boost for "PC polish" feel.
+        let tier_color = match self.tier {
+            FidelityTier::Tier0 => [1.0f32, 1.0, 1.0, 1.0],
+            FidelityTier::Tier2 => [1.05f32, 1.02, 0.98, 1.0],
+        };
+
+        let sprite_count_estimate: usize = self
+            .scene
+            .layers
+            .iter()
+            .filter(|l| l.visible)
+            .map(|l| l.sprites.len())
+            .sum::<usize>()
+            + 64; // padding for debug overlays + player
+        let mut vertices = Vec::with_capacity(sprite_count_estimate * 4);
+        let mut indices = Vec::with_capacity(sprite_count_estimate * 6);
+        let mut draw_calls = Vec::with_capacity(16);
 
         // Visual scene layers render back-to-front according to authored order.
         for layer in &self.scene.layers {
@@ -421,14 +494,24 @@ impl EngineState {
                 continue;
             }
 
-            let mut sprites = layer.sprites.clone();
-            if matches!(layer.sort_mode, SortMode::Y) {
-                sprites.sort_by(|a, b| {
-                    a.y.partial_cmp(&b.y)
+            let sprite_indices: Vec<usize> = if matches!(layer.sort_mode, SortMode::Y) {
+                let mut indices_vec: Vec<usize> = (0..layer.sprites.len()).collect();
+                indices_vec.sort_by(|&a, &b| {
+                    layer.sprites[a]
+                        .y
+                        .partial_cmp(&layer.sprites[b].y)
                         .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| {
+                            layer.sprites[a]
+                                .z
+                                .partial_cmp(&layer.sprites[b].z)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
                 });
-            }
+                indices_vec
+            } else {
+                (0..layer.sprites.len()).collect()
+            };
 
             if layer.occlusion {
                 log::trace!("Rendering occlusion layer '{}'", layer.id);
@@ -436,7 +519,8 @@ impl EngineState {
 
             // Parallax is implemented as a per-layer camera-space offset.
             let parallax_offset = self.camera.position * (1.0 - layer.parallax);
-            for sprite in &sprites {
+            for &sprite_idx in &sprite_indices {
+                let sprite = &layer.sprites[sprite_idx];
                 let Some(sprite_entry) = self.resolve_sprite_entry(sprite) else {
                     log::warn!(
                         "Skipping sprite '{}' due to unresolved asset reference",
@@ -444,7 +528,7 @@ impl EngineState {
                     );
                     continue;
                 };
-                let Some(texture) = self.textures.get(&sprite_entry.texture_path) else {
+                let Some(texture) = self.textures.get(sprite_entry.texture_path.as_str()) else {
                     log::warn!("Skipping sprite '{}' due to missing texture", sprite.id);
                     continue;
                 };
@@ -482,22 +566,22 @@ impl EngineState {
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[0][0], center_y + corners[0][1]],
                     tex_coords: [u0, v1],
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: tier_color,
                 });
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[1][0], center_y + corners[1][1]],
                     tex_coords: [u1, v1],
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: tier_color,
                 });
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[2][0], center_y + corners[2][1]],
                     tex_coords: [u1, v0],
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: tier_color,
                 });
                 vertices.push(SpriteVertex {
                     position: [center_x + corners[3][0], center_y + corners[3][1]],
                     tex_coords: [u0, v0],
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: tier_color,
                 });
 
                 let draw_start = indices.len() as u32;
@@ -510,7 +594,12 @@ impl EngineState {
                     base_index + 3,
                 ]);
 
-                push_draw_call(&mut draw_calls, &sprite_entry.texture_path, draw_start, 6);
+                push_draw_call(
+                    &mut draw_calls,
+                    Arc::from(sprite_entry.texture_path.as_str()),
+                    draw_start,
+                    6,
+                );
             }
         }
 
@@ -657,6 +746,13 @@ impl ApplicationHandler for App {
                 // Fixed-step simulation phase.
                 state.time.begin_frame();
                 let mut scene_changed = false;
+
+                // Check for Lua script reload at frame boundary (safe point)
+                state.lua_bridge.check_reload();
+                if state.input.is_just_pressed(Key::R) {
+                    state.lua_bridge.force_reload();
+                }
+
                 while state.time.should_step() {
                     if state.input.is_just_pressed(Key::Escape) {
                         event_loop.exit();
@@ -677,6 +773,10 @@ impl ApplicationHandler for App {
                             }
                         );
                     }
+                    if state.input.is_just_pressed(Key::F5) {
+                        state.tier = state.tier.next();
+                        log::info!("Fidelity tier: {}", state.tier);
+                    }
 
                     if state.input.is_just_pressed(Key::R) {
                         state.reload_scene("manual trigger (R)");
@@ -694,26 +794,52 @@ impl ApplicationHandler for App {
                         scene_changed = true;
                     }
 
-                    // Controller input is turned into deterministic simulation intent.
+                    // Skip simulation update when paused (unless single-step requested)
+                    if state.paused && !state.single_step_requested {
+                        break;
+                    }
+                    state.single_step_requested = false;
+
+                    // Build input snapshot for Lua
+                    let input_snapshot = build_input_snapshot(&state.input);
+                    let actor_snapshot = ActorSnapshot {
+                        grounded: state.character.grounded,
+                        velocity_x: state.character.velocity_x,
+                        velocity_y: state.character.velocity_y,
+                    };
+
+                    // Try Lua controller first, fall back to Rust
                     let dt = state.time.fixed_dt as f32;
-                    let mut move_x: f32 = 0.0;
-                    if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
-                        move_x -= 1.0;
-                    }
-                    if state.input.is_held(Key::Right) || state.input.is_held(Key::D) {
-                        move_x += 1.0;
-                    }
-                    let jump_pressed = state.input.is_just_pressed(Key::Space)
-                        || state.input.is_just_pressed(Key::W)
-                        || state.input.is_just_pressed(Key::Up);
-                    state.character.step(
+                    let controller_input = if let Some(intent) =
+                        state
+                            .lua_bridge
+                            .call_update(dt, &input_snapshot, &actor_snapshot)
+                    {
+                        ControllerInput {
+                            move_x: intent.move_x,
+                            jump_pressed: intent.jump_pressed,
+                        }
+                    } else {
+                        // Rust fallback controller (identical logic to the Lua script)
+                        let mut move_x: f32 = 0.0;
+                        if state.input.is_held(Key::Left) || state.input.is_held(Key::A) {
+                            move_x -= 1.0;
+                        }
+                        if state.input.is_held(Key::Right) || state.input.is_held(Key::D) {
+                            move_x += 1.0;
+                        }
+                        let jump_pressed = state.input.is_just_pressed(Key::Space)
+                            || state.input.is_just_pressed(Key::W)
+                            || state.input.is_just_pressed(Key::Up);
                         ControllerInput {
                             move_x,
                             jump_pressed,
-                        },
-                        dt,
-                        &state.collision_grid,
-                    );
+                        }
+                    };
+
+                    state
+                        .character
+                        .step(controller_input, dt, &state.collision_grid);
 
                     state.camera.position.x = state.character.aabb.center_x;
                     state.camera.position.y = state.character.aabb.center_y;
@@ -737,15 +863,36 @@ impl ApplicationHandler for App {
                 };
 
                 let predicted_bind_count = count_texture_binds(&state.draw_calls);
-                let (egui_primitives, egui_textures_delta) = state.debug_overlay.prepare(
-                    &state.window,
-                    &state.time,
-                    Some(OverlayStats {
-                        draw_calls: state.draw_calls.len() as u32,
-                        atlas_binds: predicted_bind_count as u32,
-                        sprite_count: state.sprite_count as u32,
-                    }),
-                );
+                let (egui_primitives, egui_textures_delta, overlay_actions) =
+                    state.debug_overlay.prepare(
+                        &state.window,
+                        &state.time,
+                        Some(OverlayStats {
+                            draw_calls: state.draw_calls.len() as u32,
+                            atlas_binds: predicted_bind_count as u32,
+                            sprite_count: state.sprite_count as u32,
+                            memory_estimate_mb: state.estimate_memory_mb(),
+                            tier_label: state.tier.label().to_string(),
+                            lua_status_label: state.lua_bridge.status().label().to_string(),
+                            paused: state.paused,
+                        }),
+                    );
+
+                // Handle overlay button actions
+                if overlay_actions.cycle_tier {
+                    state.tier = state.tier.next();
+                    log::info!("Fidelity tier (overlay): {}", state.tier);
+                }
+                if overlay_actions.toggle_pause {
+                    state.paused = !state.paused;
+                    log::info!(
+                        "Simulation {}",
+                        if state.paused { "PAUSED" } else { "RESUMED" }
+                    );
+                }
+                if overlay_actions.single_step {
+                    state.single_step_requested = true;
+                }
                 let screen_descriptor = egui_wgpu::ScreenDescriptor {
                     size_in_pixels: [state.gpu.size.0, state.gpu.size.1],
                     pixels_per_point: state.window.scale_factor() as f32,
@@ -760,19 +907,28 @@ impl ApplicationHandler for App {
                         });
 
                 {
-                    let mut last_bound_texture_key: Option<&str> = None;
+                    let clear_color = match state.tier {
+                        FidelityTier::Tier0 => wgpu::Color {
+                            r: 0.392,
+                            g: 0.584,
+                            b: 0.929,
+                            a: 1.0,
+                        },
+                        FidelityTier::Tier2 => wgpu::Color {
+                            r: 0.35,
+                            g: 0.55,
+                            b: 0.95,
+                            a: 1.0,
+                        },
+                    };
+                    let mut last_bound_texture_key: Option<&Arc<str>> = None;
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Scene Render Pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.392,
-                                    g: 0.584,
-                                    b: 0.929,
-                                    a: 1.0,
-                                }),
+                                load: wgpu::LoadOp::Clear(clear_color),
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
@@ -788,9 +944,13 @@ impl ApplicationHandler for App {
 
                     for draw in &state.draw_calls {
                         if let Some(texture) = state.textures.get(&draw.texture_key) {
-                            if last_bound_texture_key != Some(draw.texture_key.as_str()) {
+                            let need_rebind = match last_bound_texture_key {
+                                Some(last) => **last != *draw.texture_key,
+                                None => true,
+                            };
+                            if need_rebind {
                                 render_pass.set_bind_group(1, &texture.bind_group, &[]);
-                                last_bound_texture_key = Some(draw.texture_key.as_str());
+                                last_bound_texture_key = Some(&draw.texture_key);
                             }
                             render_pass.draw_indexed(
                                 draw.index_start..(draw.index_start + draw.index_count),
@@ -836,7 +996,13 @@ impl ApplicationHandler for App {
 
                 state.gpu.queue.submit(std::iter::once(encoder.finish()));
                 output.present();
-                state.input.end_frame();
+
+                // Only clear edge-triggered input (just_pressed / just_released)
+                // after at least one fixed step consumed it. Otherwise a press
+                // that lands on a frame with 0 simulation steps is silently lost.
+                if state.time.steps_this_frame > 0 {
+                    state.input.end_frame();
+                }
             }
 
             _ => {}
@@ -905,24 +1071,28 @@ fn add_quad(
         base_index + 3,
     ]);
 
-    push_draw_call(draw_calls, spec.texture_key, draw_start, 6);
+    push_draw_call(draw_calls, Arc::from(spec.texture_key), draw_start, 6);
 }
 
+/// Append a draw call, merging with the previous one when the texture matches
+/// and indices are contiguous. This is the core of the batching strategy:
+/// scene sprites are emitted in layer order, so consecutive sprites sharing a
+/// texture atlas collapse into a single `draw_indexed` call.
 fn push_draw_call(
     draw_calls: &mut Vec<DrawCall>,
-    texture_key: &str,
+    texture_key: Arc<str>,
     index_start: u32,
     index_count: u32,
 ) {
     if let Some(last) = draw_calls.last_mut() {
         let contiguous = last.index_start + last.index_count == index_start;
-        if last.texture_key == texture_key && contiguous {
+        if *last.texture_key == *texture_key && contiguous {
             last.index_count += index_count;
             return;
         }
     }
     draw_calls.push(DrawCall {
-        texture_key: texture_key.to_string(),
+        texture_key,
         index_start,
         index_count,
     });
@@ -934,15 +1104,22 @@ fn load_texture_asset(
     pipeline: &SpritePipeline,
     asset_path: &str,
 ) -> GpuSpriteTexture {
-    let bytes = std::fs::read(asset_path).unwrap_or_else(|err| {
-        log::warn!(
-            "Failed to read texture '{}': {}. Falling back to test sprite.",
-            asset_path,
-            err
-        );
-        FALLBACK_TEXTURE_BYTES.to_vec()
-    });
-    let texture = Texture::from_bytes(device, queue, &bytes, asset_path);
+    let bytes_owned;
+    let bytes: &[u8] = match std::fs::read(asset_path) {
+        Ok(data) => {
+            bytes_owned = data;
+            &bytes_owned
+        }
+        Err(err) => {
+            log::warn!(
+                "Failed to read texture '{}': {}. Falling back to test sprite.",
+                asset_path,
+                err
+            );
+            FALLBACK_TEXTURE_BYTES
+        }
+    };
+    let texture = Texture::from_bytes(device, queue, bytes, asset_path);
     let bind_group = pipeline.create_texture_bind_group(device, &texture);
     GpuSpriteTexture {
         texture,
@@ -986,8 +1163,9 @@ fn count_texture_binds(draw_calls: &[DrawCall]) -> usize {
     let mut binds = 0usize;
     let mut current: Option<&str> = None;
     for draw in draw_calls {
-        if current != Some(draw.texture_key.as_str()) {
-            current = Some(draw.texture_key.as_str());
+        let key: &str = &draw.texture_key;
+        if current != Some(key) {
+            current = Some(key);
             binds += 1;
         }
     }
@@ -1004,12 +1182,43 @@ fn map_key(key_code: KeyCode) -> Option<Key> {
         KeyCode::Space => Some(Key::Space),
         KeyCode::F3 => Some(Key::F3),
         KeyCode::F4 => Some(Key::F4),
+        KeyCode::F5 => Some(Key::F5),
         KeyCode::KeyW => Some(Key::W),
         KeyCode::KeyA => Some(Key::A),
         KeyCode::KeyS => Some(Key::S),
         KeyCode::KeyD => Some(Key::D),
         KeyCode::KeyR => Some(Key::R),
         _ => None,
+    }
+}
+
+fn build_input_snapshot(input: &InputState) -> InputSnapshot {
+    let key_names: &[(Key, &str)] = &[
+        (Key::Left, "left"),
+        (Key::Right, "right"),
+        (Key::Up, "up"),
+        (Key::Down, "down"),
+        (Key::Space, "space"),
+        (Key::W, "w"),
+        (Key::A, "a"),
+        (Key::S, "s"),
+        (Key::D, "d"),
+    ];
+
+    let mut held_keys = Vec::new();
+    let mut just_pressed_keys = Vec::new();
+    for &(key, name) in key_names {
+        if input.is_held(key) {
+            held_keys.push(name.to_string());
+        }
+        if input.is_just_pressed(key) {
+            just_pressed_keys.push(name.to_string());
+        }
+    }
+
+    InputSnapshot {
+        held_keys,
+        just_pressed_keys,
     }
 }
 

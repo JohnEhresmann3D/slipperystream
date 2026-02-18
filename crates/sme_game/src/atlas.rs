@@ -1,3 +1,14 @@
+//! Atlas metadata loading and sprite ID resolution.
+//!
+//! The atlas packer (tools/atlas_packer) outputs a JSON metadata file that maps
+//! stable `sprite_id` strings to texture regions (UV rects, pixel sizes, pivots).
+//! Sprite IDs are content-addressed hashes, so renaming or re-packing the atlas
+//! sheet does not break scene references.
+//!
+//! `AtlasRegistry::resolve(sprite_id)` is the primary lookup used at render time.
+//! It returns an `AtlasSpriteEntry` containing the texture path, UV rect, and
+//! pixel dimensions needed to build a sprite quad.
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
