@@ -29,6 +29,10 @@ pub struct OverlayStats {
     pub lua_status_label: String,
     /// Whether simulation is paused
     pub paused: bool,
+    /// Number of loaded atlases
+    pub atlas_count: u32,
+    /// Number of active animation states
+    pub active_animations: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -115,6 +119,8 @@ impl DebugOverlay {
                             ui.label(format!("Atlas binds: {}", stats.atlas_binds));
                             ui.label(format!("Sprites: {}", stats.sprite_count));
                             ui.label(format!("Memory: {:.1} MB", stats.memory_estimate_mb));
+                            ui.label(format!("Atlases: {}", stats.atlas_count));
+                            ui.label(format!("Animations: {}", stats.active_animations));
                         }
 
                         // --- M5: Fidelity Tier ---

@@ -15,6 +15,7 @@
 //! Hot reload: scene JSON, collision JSON, atlas metadata, and Lua scripts are all
 //! watched via mtime polling and reloaded at frame boundaries (between fixed steps).
 
+mod animation;
 mod atlas;
 mod collision;
 mod controller;
@@ -33,11 +34,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use atlas::{load_atlas_from_path, AtlasRegistry, AtlasSpriteEntry};
+use animation::AnimationRegistry;
+use atlas::{load_atlas_from_path, AtlasSpriteEntry, MultiAtlasRegistry};
 use collision::{load_collision_from_path, Aabb, CollisionGrid};
 use controller::{CharacterController, ControllerInput};
 use lua_bridge::{ActorSnapshot, InputSnapshot, LuaBridge};
 use scene::{load_scene_from_path, SceneFile, SceneWatcher, SortMode};
+use sme_core::animation::AnimationState;
 use sme_core::input::{InputState, Key};
 use sme_core::tier::FidelityTier;
 use sme_core::time::TimeState;
@@ -48,8 +51,9 @@ use sme_render::{Camera2D, GpuContext, SpritePipeline, SpriteVertex, Texture};
 const LUA_SCRIPT_PATH: &str = "assets/scripts/controller.lua";
 const SCENE_PATH: &str = "assets/scenes/m4_scene.json";
 const COLLISION_PATH: &str = "assets/collision/m3_collision.json";
-const ATLAS_PATH: &str = "assets/generated/m4_sample_atlas.json";
+const LEGACY_ATLAS_PATH: &str = "assets/generated/m4_sample_atlas.json";
 const STRICT_SPRITE_ID_RESOLUTION: bool = true;
+const FIXED_DT_US: u64 = 16_667;
 const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/test_sprite.png");
 const DEBUG_WHITE_ASSET: &str = "__debug_white";
 const PLAYER_ASSET: &str = "__player";
@@ -101,9 +105,13 @@ struct EngineState {
     collision_path: std::path::PathBuf,
     collision_watcher: SceneWatcher,
     collision_grid: CollisionGrid,
-    atlas_path: std::path::PathBuf,
-    atlas_watcher: SceneWatcher,
-    atlas_registry: Option<AtlasRegistry>,
+    atlas_paths: Vec<std::path::PathBuf>,
+    atlas_watchers: Vec<SceneWatcher>,
+    multi_atlas: MultiAtlasRegistry,
+    animation_paths: Vec<std::path::PathBuf>,
+    animation_watchers: Vec<SceneWatcher>,
+    animation_registry: AnimationRegistry,
+    animation_states: HashMap<String, AnimationState>,
     character: CharacterController,
     show_collision_debug: bool,
     tier: FidelityTier,
@@ -151,45 +159,77 @@ impl EngineState {
                 err
             );
         });
-        let atlas_path = std::path::PathBuf::from(ATLAS_PATH);
-        let atlas_watcher = SceneWatcher::new(atlas_path.clone());
-        let atlas_registry = if atlas_path.exists() {
-            match load_atlas_from_path(&atlas_path) {
-                Ok(registry) => Some(registry),
-                Err(err) => {
-                    log::error!(
-                        "Failed to load initial atlas '{}': {}",
-                        atlas_path.display(),
-                        err
-                    );
-                    None
-                }
-            }
+        // Build multi-atlas from scene-declared atlases (v0.2) or legacy fallback (v0.1)
+        let atlas_path_strings = if scene.atlases.is_empty() {
+            vec![LEGACY_ATLAS_PATH.to_string()]
         } else {
-            log::warn!(
-                "Atlas metadata '{}' was not found. sprite_id references will fail to resolve.",
-                atlas_path.display()
-            );
-            None
+            scene.atlases.clone()
         };
-        if let Err(err) = validate_scene_sprite_references(&scene, atlas_registry.as_ref()) {
+        let mut multi_atlas = MultiAtlasRegistry::new();
+        let mut atlas_paths = Vec::new();
+        let mut atlas_watchers = Vec::new();
+        for atlas_path_str in &atlas_path_strings {
+            let atlas_path = std::path::PathBuf::from(atlas_path_str);
+            atlas_watchers.push(SceneWatcher::new(atlas_path.clone()));
+            if atlas_path.exists() {
+                match load_atlas_from_path(&atlas_path) {
+                    Ok(registry) => {
+                        if let Err(err) = multi_atlas.add_atlas(atlas_path_str, registry) {
+                            log::error!("Failed to add atlas '{}': {}", atlas_path.display(), err);
+                        }
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "Failed to load initial atlas '{}': {}",
+                            atlas_path.display(),
+                            err
+                        );
+                    }
+                }
+            } else {
+                log::warn!(
+                    "Atlas metadata '{}' was not found. sprite_id references will fail to resolve.",
+                    atlas_path.display()
+                );
+            }
+            atlas_paths.push(atlas_path);
+        }
+        if let Err(err) = validate_scene_sprite_references(&scene, &multi_atlas) {
             panic!(
                 "Initial scene '{}' failed sprite reference validation: {}",
                 scene_path.display(),
                 err
             );
         }
-        if let Some(registry) = atlas_registry.as_ref() {
-            if let Err(err) =
-                preflight_atlas_textures(&gpu.device, &gpu.queue, &sprite_pipeline, registry)
-            {
-                panic!(
-                    "Initial atlas '{}' failed texture preflight: {}",
-                    atlas_path.display(),
-                    err
-                );
-            }
+        if let Err(err) =
+            preflight_multi_atlas_textures(&gpu.device, &gpu.queue, &sprite_pipeline, &multi_atlas)
+        {
+            panic!("Initial atlas set failed texture preflight: {}", err);
         }
+
+        // Load animation files
+        let mut animation_registry = AnimationRegistry::new();
+        let mut animation_paths = Vec::new();
+        let mut animation_watchers = Vec::new();
+        for anim_path_str in &scene.animations {
+            let anim_path = std::path::PathBuf::from(anim_path_str);
+            animation_watchers.push(SceneWatcher::new(anim_path.clone()));
+            if anim_path.exists() {
+                if let Err(err) = animation_registry.load_file(&anim_path) {
+                    log::error!(
+                        "Failed to load animation '{}': {}",
+                        anim_path.display(),
+                        err
+                    );
+                }
+            } else {
+                log::warn!("Animation file '{}' not found.", anim_path.display());
+            }
+            animation_paths.push(anim_path);
+        }
+
+        // Init animation states for sprites that declare animations
+        let animation_states = build_animation_states(&scene, &animation_registry);
 
         let mut camera = Camera2D::new(gpu.size.0, gpu.size.1);
         if let Some(scene_camera) = &scene.camera {
@@ -232,9 +272,13 @@ impl EngineState {
             collision_path,
             collision_watcher,
             collision_grid,
-            atlas_path,
-            atlas_watcher,
-            atlas_registry,
+            atlas_paths,
+            atlas_watchers,
+            multi_atlas,
+            animation_paths,
+            animation_watchers,
+            animation_registry,
+            animation_states,
             character,
             show_collision_debug: true,
             tier: FidelityTier::default(),
@@ -262,13 +306,63 @@ impl EngineState {
     fn reload_scene(&mut self, reason: &str) {
         match load_scene_from_path(&self.scene_path) {
             Ok(scene_candidate) => {
-                if let Err(err) =
-                    validate_scene_sprite_references(&scene_candidate, self.atlas_registry.as_ref())
-                {
+                // Rebuild atlas set from new scene's atlas declarations
+                let atlas_path_strings = if scene_candidate.atlases.is_empty() {
+                    vec![LEGACY_ATLAS_PATH.to_string()]
+                } else {
+                    scene_candidate.atlases.clone()
+                };
+                let mut new_multi = MultiAtlasRegistry::new();
+                let mut new_atlas_paths = Vec::new();
+                let mut new_atlas_watchers = Vec::new();
+                for atlas_path_str in &atlas_path_strings {
+                    let atlas_path = std::path::PathBuf::from(atlas_path_str);
+                    new_atlas_watchers.push(SceneWatcher::new(atlas_path.clone()));
+                    if atlas_path.exists() {
+                        match load_atlas_from_path(&atlas_path) {
+                            Ok(registry) => {
+                                if let Err(err) = new_multi.add_atlas(atlas_path_str, registry) {
+                                    log::error!("Scene reload ({reason}): atlas add error: {err}");
+                                }
+                            }
+                            Err(err) => {
+                                log::error!("Scene reload ({reason}): atlas load error: {err}");
+                            }
+                        }
+                    }
+                    new_atlas_paths.push(atlas_path);
+                }
+
+                if let Err(err) = validate_scene_sprite_references(&scene_candidate, &new_multi) {
                     log::error!("Scene reload failed ({reason}): {err}");
                     return;
                 }
+
+                // Rebuild animation set from new scene
+                let mut new_anim_registry = AnimationRegistry::new();
+                let mut new_anim_paths = Vec::new();
+                let mut new_anim_watchers = Vec::new();
+                for anim_path_str in &scene_candidate.animations {
+                    let anim_path = std::path::PathBuf::from(anim_path_str);
+                    new_anim_watchers.push(SceneWatcher::new(anim_path.clone()));
+                    if anim_path.exists() {
+                        if let Err(err) = new_anim_registry.load_file(&anim_path) {
+                            log::error!("Scene reload ({reason}): anim load error: {err}");
+                        }
+                    }
+                    new_anim_paths.push(anim_path);
+                }
+
+                self.multi_atlas = new_multi;
+                self.atlas_paths = new_atlas_paths;
+                self.atlas_watchers = new_atlas_watchers;
+                self.animation_registry = new_anim_registry;
+                self.animation_paths = new_anim_paths;
+                self.animation_watchers = new_anim_watchers;
                 self.scene = scene_candidate;
+                self.animation_states =
+                    build_animation_states(&self.scene, &self.animation_registry);
+
                 if let Some(scene_camera) = &self.scene.camera {
                     self.camera.position.x = scene_camera.start_x;
                     self.camera.position.y = scene_camera.start_y;
@@ -305,29 +399,23 @@ impl EngineState {
         }
     }
 
-    fn reload_atlas(&mut self, reason: &str) {
-        match load_atlas_from_path(&self.atlas_path) {
+    fn reload_atlas(&mut self, atlas_index: usize, reason: &str) {
+        let atlas_path = &self.atlas_paths[atlas_index];
+        let atlas_key = atlas_path.to_string_lossy().to_string();
+        match load_atlas_from_path(atlas_path) {
             Ok(registry_candidate) => {
-                if let Err(err) =
-                    validate_scene_sprite_references(&self.scene, Some(&registry_candidate))
-                {
+                self.multi_atlas.remove_atlas(&atlas_key);
+                if let Err(err) = self.multi_atlas.add_atlas(&atlas_key, registry_candidate) {
                     log::error!("Atlas reload failed ({reason}): {err}");
                     return;
                 }
-                if let Err(err) = preflight_atlas_textures(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    &self.sprite_pipeline,
-                    &registry_candidate,
-                ) {
+                if let Err(err) = validate_scene_sprite_references(&self.scene, &self.multi_atlas) {
                     log::error!("Atlas reload failed ({reason}): {err}");
                     return;
                 }
-                let atlas_id = registry_candidate.atlas_id.clone();
-                self.atlas_registry = Some(registry_candidate);
                 self.ensure_textures_for_scene();
                 self.rebuild_scene_mesh();
-                log::info!("Atlas reloaded ({reason}): {}", atlas_id);
+                log::info!("Atlas reloaded ({reason}): {}", atlas_key);
             }
             Err(err) => {
                 log::error!("Atlas reload failed ({reason}): {err}");
@@ -335,25 +423,66 @@ impl EngineState {
         }
     }
 
+    fn reload_animation(&mut self, anim_index: usize, reason: &str) {
+        let anim_path = &self.animation_paths[anim_index];
+        match sme_core::animation::load_animation_file(anim_path) {
+            Ok(file) => {
+                // Remove old, add new under its animation_id
+                self.animation_registry.remove_file(&file.animation_id);
+                if let Err(err) = self.animation_registry.load_file(anim_path) {
+                    log::error!("Animation reload failed ({reason}): {err}");
+                    return;
+                }
+                // Reset animation states for affected sprites
+                self.animation_states =
+                    build_animation_states(&self.scene, &self.animation_registry);
+                log::info!("Animation reloaded ({reason}): {}", file.animation_id);
+            }
+            Err(err) => {
+                log::error!("Animation reload failed ({reason}): {err}");
+            }
+        }
+    }
+
     /// Resolve a scene sprite to its atlas entry. Lookup chain:
-    ///  1. If `sprite_id` is set, look it up in the atlas registry (stable hash ID).
-    ///  2. Otherwise fall back to the raw `asset` path (legacy/direct-texture mode).
+    ///  1. If the sprite has an active animation state, use the current frame's sprite_id.
+    ///  2. If `sprite_id` is set, look it up in the multi-atlas registry (stable hash ID).
+    ///  3. Otherwise fall back to the raw `asset` path (legacy/direct-texture mode).
     fn resolve_sprite_entry(&self, sprite: &scene::SceneSprite) -> Option<AtlasSpriteEntry> {
-        if let Some(sprite_id) = &sprite.sprite_id {
-            let Some(registry) = &self.atlas_registry else {
+        // Check if animation state overrides the sprite_id
+        let effective_sprite_id = if let Some(anim_state) = self.animation_states.get(&sprite.id) {
+            if !anim_state.finished || sprite.sprite_id.is_some() {
+                // Look up the current frame's sprite_id from the animation
+                let clip = self
+                    .animation_registry
+                    .resolve_clip(Some(&anim_state.source_id), &anim_state.clip_name);
+                clip.and_then(|c| c.frames.get(anim_state.frame_index))
+                    .map(|f| f.sprite_id.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let lookup_id = effective_sprite_id
+            .as_deref()
+            .or(sprite.sprite_id.as_deref());
+
+        if let Some(sprite_id) = lookup_id {
+            if self.multi_atlas.is_empty() {
                 log::warn!(
                     "Sprite '{}' references sprite_id '{}' but no atlas is loaded",
                     sprite.id,
                     sprite_id
                 );
                 return None;
-            };
-            let Some(entry) = registry.resolve(sprite_id) else {
+            }
+            let Some(entry) = self.multi_atlas.resolve(sprite_id) else {
                 log::warn!(
-                    "Sprite '{}' references missing sprite_id '{}' in atlas '{}'",
+                    "Sprite '{}' references missing sprite_id '{}'",
                     sprite.id,
-                    sprite_id,
-                    registry.atlas_id
+                    sprite_id
                 );
                 return None;
             };
@@ -535,7 +664,7 @@ impl EngineState {
 
                 let center_x = sprite.x + parallax_offset.x;
                 let center_y = sprite.y + parallax_offset.y;
-                let source_size = if sprite.sprite_id.is_some() {
+                let source_size = if sprite.sprite_id.is_some() || sprite.animation.is_some() {
                     sprite_entry.size_px
                 } else {
                     texture.texture.size
@@ -781,7 +910,12 @@ impl ApplicationHandler for App {
                     if state.input.is_just_pressed(Key::R) {
                         state.reload_scene("manual trigger (R)");
                         state.reload_collision("manual trigger (R)");
-                        state.reload_atlas("manual trigger (R)");
+                        for i in 0..state.atlas_paths.len() {
+                            state.reload_atlas(i, "manual trigger (R)");
+                        }
+                        for i in 0..state.animation_paths.len() {
+                            state.reload_animation(i, "manual trigger (R)");
+                        }
                         scene_changed = true;
                     } else if state.scene_watcher.should_reload() {
                         state.reload_scene("file watcher");
@@ -789,9 +923,19 @@ impl ApplicationHandler for App {
                     } else if state.collision_watcher.should_reload() {
                         state.reload_collision("file watcher");
                         scene_changed = true;
-                    } else if state.atlas_watcher.should_reload() {
-                        state.reload_atlas("file watcher");
-                        scene_changed = true;
+                    } else {
+                        for i in 0..state.atlas_watchers.len() {
+                            if state.atlas_watchers[i].should_reload() {
+                                state.reload_atlas(i, "file watcher");
+                                scene_changed = true;
+                            }
+                        }
+                        for i in 0..state.animation_watchers.len() {
+                            if state.animation_watchers[i].should_reload() {
+                                state.reload_animation(i, "file watcher");
+                                scene_changed = true;
+                            }
+                        }
                     }
 
                     // Skip simulation update when paused (unless single-step requested)
@@ -802,10 +946,15 @@ impl ApplicationHandler for App {
 
                     // Build input snapshot for Lua
                     let input_snapshot = build_input_snapshot(&state.input);
+
+                    // Find the player sprite's animation state for the Lua snapshot
+                    let player_anim_state = state.animation_states.get("player");
                     let actor_snapshot = ActorSnapshot {
                         grounded: state.character.grounded,
                         velocity_x: state.character.velocity_x,
                         velocity_y: state.character.velocity_y,
+                        current_animation: player_anim_state.map(|s| s.clip_name.clone()),
+                        animation_finished: player_anim_state.is_some_and(|s| s.finished),
                     };
 
                     // Try Lua controller first, fall back to Rust
@@ -815,6 +964,48 @@ impl ApplicationHandler for App {
                             .lua_bridge
                             .call_update(dt, &input_snapshot, &actor_snapshot)
                     {
+                        // Apply animation intents from Lua
+                        if intent.stop_animation {
+                            state.animation_states.remove("player");
+                        } else if let Some(anim_name) = &intent.play_animation {
+                            // Only switch if it's a different animation
+                            let should_switch = state
+                                .animation_states
+                                .get("player")
+                                .is_none_or(|s| s.clip_name != *anim_name);
+                            if should_switch {
+                                // Find source from the scene sprite definition
+                                let source = state
+                                    .scene
+                                    .layers
+                                    .iter()
+                                    .flat_map(|l| &l.sprites)
+                                    .find(|s| s.id == "player")
+                                    .and_then(|s| s.animation_source.as_deref())
+                                    .unwrap_or("");
+                                let source_opt = if source.is_empty() {
+                                    None
+                                } else {
+                                    Some(source)
+                                };
+                                if state
+                                    .animation_registry
+                                    .resolve_clip(source_opt, anim_name)
+                                    .is_some()
+                                {
+                                    let effective_source = if source.is_empty() {
+                                        anim_name.as_str()
+                                    } else {
+                                        source
+                                    };
+                                    state.animation_states.insert(
+                                        "player".to_string(),
+                                        AnimationState::new(effective_source, anim_name),
+                                    );
+                                }
+                            }
+                        }
+
                         ControllerInput {
                             move_x: intent.move_x,
                             jump_pressed: intent.jump_pressed,
@@ -840,6 +1031,22 @@ impl ApplicationHandler for App {
                     state
                         .character
                         .step(controller_input, dt, &state.collision_grid);
+
+                    // Tick all active animations
+                    for (sprite_id, anim_state) in state.animation_states.iter_mut() {
+                        if let Some(clip) = state
+                            .animation_registry
+                            .resolve_clip(Some(&anim_state.source_id), &anim_state.clip_name)
+                        {
+                            anim_state.tick(FIXED_DT_US, clip);
+                        } else {
+                            log::warn!(
+                                "Sprite '{}' references unknown animation clip '{}'",
+                                sprite_id,
+                                anim_state.clip_name
+                            );
+                        }
+                    }
 
                     state.camera.position.x = state.character.aabb.center_x;
                     state.camera.position.y = state.character.aabb.center_y;
@@ -875,6 +1082,8 @@ impl ApplicationHandler for App {
                             tier_label: state.tier.label().to_string(),
                             lua_status_label: state.lua_bridge.status().label().to_string(),
                             paused: state.paused,
+                            atlas_count: state.multi_atlas.atlas_count() as u32,
+                            active_animations: state.animation_states.len() as u32,
                         }),
                     );
 
@@ -1143,20 +1352,60 @@ fn load_texture_asset_strict(
     })
 }
 
-fn preflight_atlas_textures(
+fn preflight_multi_atlas_textures(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &SpritePipeline,
-    atlas_registry: &AtlasRegistry,
+    multi_atlas: &MultiAtlasRegistry,
 ) -> Result<(), String> {
-    let mut required_textures = std::collections::HashSet::new();
-    for entry in atlas_registry.sprite_entries.values() {
-        required_textures.insert(entry.texture_path.as_str());
-    }
-    for texture_path in required_textures {
-        let _ = load_texture_asset_strict(device, queue, pipeline, texture_path)?;
+    for texture_path in multi_atlas.texture_paths() {
+        let _ = load_texture_asset_strict(device, queue, pipeline, &texture_path)?;
     }
     Ok(())
+}
+
+fn build_animation_states(
+    scene: &SceneFile,
+    animation_registry: &AnimationRegistry,
+) -> HashMap<String, AnimationState> {
+    let mut states = HashMap::new();
+    for layer in &scene.layers {
+        for sprite in &layer.sprites {
+            if let Some(clip_name) = &sprite.animation {
+                let source_id = sprite.animation_source.as_deref().unwrap_or("");
+                // Verify the clip exists before creating state
+                let source_opt = if source_id.is_empty() {
+                    None
+                } else {
+                    Some(source_id)
+                };
+                if animation_registry
+                    .resolve_clip(source_opt, clip_name)
+                    .is_some()
+                {
+                    states.insert(
+                        sprite.id.clone(),
+                        AnimationState::new(
+                            if source_id.is_empty() {
+                                clip_name
+                            } else {
+                                source_id
+                            },
+                            clip_name,
+                        ),
+                    );
+                } else {
+                    log::warn!(
+                        "Sprite '{}' references animation '{}' (source: {:?}) but clip not found",
+                        sprite.id,
+                        clip_name,
+                        sprite.animation_source
+                    );
+                }
+            }
+        }
+    }
+    states
 }
 
 fn count_texture_binds(draw_calls: &[DrawCall]) -> usize {
@@ -1224,7 +1473,7 @@ fn build_input_snapshot(input: &InputState) -> InputSnapshot {
 
 fn validate_scene_sprite_references(
     scene: &SceneFile,
-    atlas_registry: Option<&AtlasRegistry>,
+    multi_atlas: &MultiAtlasRegistry,
 ) -> Result<(), String> {
     if !STRICT_SPRITE_ID_RESOLUTION {
         return Ok(());
@@ -1235,16 +1484,16 @@ fn validate_scene_sprite_references(
             let Some(sprite_id) = &sprite.sprite_id else {
                 continue;
             };
-            let registry = atlas_registry.ok_or_else(|| {
-                format!(
+            if multi_atlas.is_empty() {
+                return Err(format!(
                     "sprite '{}' references sprite_id '{}' but no atlas metadata is loaded",
                     sprite.id, sprite_id
-                )
-            })?;
-            if registry.resolve(sprite_id).is_none() {
+                ));
+            }
+            if multi_atlas.resolve(sprite_id).is_none() {
                 return Err(format!(
-                    "sprite '{}' references missing sprite_id '{}' in atlas '{}'",
-                    sprite.id, sprite_id, registry.atlas_id
+                    "sprite '{}' references missing sprite_id '{}'",
+                    sprite.id, sprite_id
                 ));
             }
         }

@@ -21,10 +21,12 @@ use std::time::SystemTime;
 use mlua::prelude::*;
 
 /// Intent returned by Lua's on_update — describes desired motion, not direct mutation.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct LuaIntent {
     pub move_x: f32,
     pub jump_pressed: bool,
+    pub play_animation: Option<String>,
+    pub stop_animation: bool,
 }
 
 /// Status of the Lua runtime for display in the debug overlay.
@@ -59,6 +61,8 @@ pub struct ActorSnapshot {
     pub grounded: bool,
     pub velocity_x: f32,
     pub velocity_y: f32,
+    pub current_animation: Option<String>,
+    pub animation_finished: bool,
 }
 
 /// Snapshot of input state passed to Lua each frame.
@@ -172,11 +176,18 @@ impl LuaBridge {
         actor_table.set("grounded", actor.grounded)?;
         actor_table.set("velocity_x", actor.velocity_x)?;
         actor_table.set("velocity_y", actor.velocity_y)?;
+        match &actor.current_animation {
+            Some(name) => actor_table.set("current_animation", name.as_str())?,
+            None => actor_table.set("current_animation", LuaValue::Nil)?,
+        }
+        actor_table.set("animation_finished", actor.animation_finished)?;
 
         // Reset intent
         let intent_table: LuaTable = engine.get("_intent")?;
         intent_table.set("move_x", 0.0f32)?;
         intent_table.set("jump_pressed", false)?;
+        intent_table.set("play_animation", LuaValue::Nil)?;
+        intent_table.set("stop_animation", false)?;
 
         // Call on_update(dt)
         let on_update: LuaFunction = self.lua.globals().get("on_update")?;
@@ -185,10 +196,14 @@ impl LuaBridge {
         // Read back intent
         let move_x: f32 = intent_table.get("move_x")?;
         let jump_pressed: bool = intent_table.get("jump_pressed")?;
+        let play_animation: Option<String> = intent_table.get("play_animation").ok();
+        let stop_animation: bool = intent_table.get("stop_animation").unwrap_or(false);
 
         Ok(LuaIntent {
             move_x,
             jump_pressed,
+            play_animation,
+            stop_animation,
         })
     }
 
@@ -318,6 +333,28 @@ impl LuaBridge {
         })?;
         actor_table.set("set_intent", set_intent)?;
 
+        // engine.actor.play_animation(name)
+        let play_animation = lua.create_function(|lua_ctx, name: String| {
+            let engine: LuaTable = lua_ctx.globals().get("engine")?;
+            let intent: LuaTable = engine.get("_intent")?;
+            intent.set("play_animation", name)?;
+            Ok(())
+        })?;
+        actor_table.set("play_animation", play_animation)?;
+
+        // engine.actor.stop_animation()
+        let stop_animation = lua.create_function(|lua_ctx, ()| {
+            let engine: LuaTable = lua_ctx.globals().get("engine")?;
+            let intent: LuaTable = engine.get("_intent")?;
+            intent.set("stop_animation", true)?;
+            Ok(())
+        })?;
+        actor_table.set("stop_animation", stop_animation)?;
+
+        // Read-only animation state
+        actor_table.set("current_animation", LuaValue::Nil)?;
+        actor_table.set("animation_finished", false)?;
+
         engine.set("actor", actor_table)?;
 
         // engine._intent (internal, read by Rust after on_update)
@@ -374,6 +411,8 @@ end
             grounded: false,
             velocity_x: 0.0,
             velocity_y: 0.0,
+            current_animation: None,
+            animation_finished: false,
         }
     }
 
@@ -625,6 +664,96 @@ end
         assert_eq!(results_a[5], (1.0, true), "step 5: jump while moving right");
         assert_eq!(results_a[8], (0.0, false), "step 8: stopped");
         assert_eq!(results_a[10], (-1.0, false), "step 10: moving left");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lua_play_animation_returns_intent() {
+        let path = temp_lua_path("play_anim");
+        write_temp_script(
+            &path,
+            r#"
+function on_update(dt)
+    engine.actor.set_intent(0.0, false)
+    engine.actor.play_animation("run")
+end
+"#,
+        );
+
+        let bridge = LuaBridge::new(path.clone());
+        assert_eq!(bridge.status(), LuaStatus::Loaded);
+
+        let intent = bridge
+            .call_update(1.0 / 60.0, &make_input(), &make_actor())
+            .expect("should return intent");
+        assert_eq!(intent.play_animation.as_deref(), Some("run"));
+        assert!(!intent.stop_animation);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lua_stop_animation_returns_intent() {
+        let path = temp_lua_path("stop_anim");
+        write_temp_script(
+            &path,
+            r#"
+function on_update(dt)
+    engine.actor.set_intent(0.0, false)
+    engine.actor.stop_animation()
+end
+"#,
+        );
+
+        let bridge = LuaBridge::new(path.clone());
+        assert_eq!(bridge.status(), LuaStatus::Loaded);
+
+        let intent = bridge
+            .call_update(1.0 / 60.0, &make_input(), &make_actor())
+            .expect("should return intent");
+        assert!(intent.stop_animation);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lua_reads_animation_state() {
+        let path = temp_lua_path("read_anim_state");
+        write_temp_script(
+            &path,
+            r#"
+function on_update(dt)
+    local anim = engine.actor.current_animation
+    local finished = engine.actor.animation_finished
+    -- Use animation state to drive movement
+    if anim == "idle" and not finished then
+        engine.actor.set_intent(0.0, false)
+    else
+        engine.actor.set_intent(1.0, false)
+    end
+end
+"#,
+        );
+
+        let bridge = LuaBridge::new(path.clone());
+        assert_eq!(bridge.status(), LuaStatus::Loaded);
+
+        // With "idle" animation, should get move_x = 0
+        let mut actor = make_actor();
+        actor.current_animation = Some("idle".to_string());
+        actor.animation_finished = false;
+        let intent = bridge
+            .call_update(1.0 / 60.0, &make_input(), &actor)
+            .expect("should return intent");
+        assert_eq!(intent.move_x, 0.0);
+
+        // With no animation, should get move_x = 1
+        let actor2 = make_actor(); // current_animation = None
+        let intent2 = bridge
+            .call_update(1.0 / 60.0, &make_input(), &actor2)
+            .expect("should return intent");
+        assert_eq!(intent2.move_x, 1.0);
 
         let _ = std::fs::remove_file(&path);
     }

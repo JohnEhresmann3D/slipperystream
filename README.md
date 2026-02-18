@@ -12,7 +12,7 @@ Apache License 2.0. See `LICENSE` for full terms and `NOTICE` for attribution.
 
 ## Current Status: M5 Complete (v0.1 Feature-Complete)
 
-All five milestones are implemented and passing 75 tests across 6 crates.
+All five milestones are implemented and passing 99 tests across 6 crates. Post-v0.1 work has added multi-atlas support and sprite sheet animation.
 
 | Milestone | Status | Summary |
 |-----------|--------|---------|
@@ -29,7 +29,9 @@ All five milestones are implemented and passing 75 tests across 6 crates.
 ### Rendering
 
 - **Sprite batch renderer** with draw call merging — consecutive sprites sharing the same atlas texture collapse into a single `draw_indexed` call, minimizing GPU bind-group switches.
+- **Multi-atlas support** — scenes declare which atlases they need via the `atlases` field. Multiple atlases are loaded into a flat O(1) sprite index. Individual atlases can be hot-reloaded without rebuilding the entire registry. Legacy single-atlas scenes work unchanged via automatic fallback.
 - **Texture atlas system** with content-addressed stable IDs (UUID v5). Sprites are referenced by deterministic hash-based IDs, not brittle file paths. Atlas metadata survives repacking without breaking scene references.
+- **Sprite sheet animation** — frame-based animation clips defined in JSON, with per-frame durations and looping control. Animation timing uses integer microseconds for deterministic advancement under fixed timestep. Animations are ticked in the simulation loop and freeze/advance correctly with pause/single-step.
 - **Ordered scene layers** with per-layer parallax factors. Foreground layers support occlusion masking. Layers optionally Y-sort their sprites for depth ordering.
 - **Orthographic camera** with position/zoom controls and per-layer parallax offset computation.
 - **Fidelity tier system** — Tier 0 (mobile-safe baseline) and Tier 2 (PC polish) are runtime-switchable. Tier 2 adds a warm sprite color tint and enhanced clear color. Tiers never affect simulation or determinism.
@@ -48,7 +50,9 @@ All five milestones are implemented and passing 75 tests across 6 crates.
 - **Engine API surface** exposed to Lua:
   - `engine.input.is_held(key)` / `engine.input.is_just_pressed(key)` — input queries
   - `engine.actor.grounded` / `engine.actor.velocity_x` / `engine.actor.velocity_y` — read-only actor state
+  - `engine.actor.current_animation` / `engine.actor.animation_finished` — read-only animation state
   - `engine.actor.set_intent(move_x, jump_pressed)` — write movement intent
+  - `engine.actor.play_animation(name)` / `engine.actor.stop_animation()` — control sprite animation from scripts
 - **Script lifecycle**: `on_init()` called on load/reload, `on_update(dt)` called each fixed step.
 - **Rust fallback controller** — if Lua script is missing or errors, the engine seamlessly falls back to an identical Rust-native controller. No gameplay interruption.
 - **Script hot reload** via file modification time polling. Errors are logged without crashing; previous valid script stays active.
@@ -61,7 +65,8 @@ All asset types support hot reload with validate-before-swap safety:
 |-------|---------|----------|
 | Scene JSON | File watcher + R key | Keeps previous valid scene |
 | Collision JSON | File watcher + R key | Keeps previous valid collision |
-| Atlas metadata | File watcher + R key | Validates sprite refs before swap |
+| Atlas metadata | File watcher + R key | Per-atlas reload, validates sprite refs before swap |
+| Animation JSON | File watcher + R key | Reloads clips, resets affected animation states |
 | Lua scripts | File watcher + R key | Falls back to Rust controller |
 
 Reload only happens at frame boundaries — never mid-simulation-step. See `docs/planning/hot_reload_guide.md` for details.
@@ -70,6 +75,7 @@ Reload only happens at frame boundaries — never mid-simulation-step. See `docs
 
 - FPS, frame time, fixed-step count
 - Draw calls, atlas binds, sprite count
+- Loaded atlas count and active animation count
 - Estimated GPU memory usage
 - Current fidelity tier with cycle button
 - Lua runtime status (loaded / error / fallback)
@@ -105,7 +111,7 @@ The engine launches with the sample scene, collision grid, and Lua controller.
 ### Run Tests
 
 ```powershell
-cargo test --workspace    # All 75 tests
+cargo test --workspace    # All 99 tests
 cargo clippy --workspace  # Lint check
 cargo fmt --check         # Format check
 ```
@@ -154,6 +160,13 @@ Create a scene JSON file (see `assets/scenes/m4_scene.json` as a reference):
 {
   "version": "0.2",
   "scene_id": "my_level",
+  "atlases": [
+    "assets/generated/characters_atlas.json",
+    "assets/generated/environment_atlas.json"
+  ],
+  "animations": [
+    "assets/animations/hero_animations.json"
+  ],
   "camera": { "start_x": 0, "start_y": 100, "zoom": 1.0 },
   "layers": [
     {
@@ -199,7 +212,9 @@ Key concepts:
 - **occlusion: true** = layer draws in front of everything (foreground mask)
 - **sort_mode: "y"** = sprites auto-sort by Y position (for depth in side-view or top-down)
 
-Sprites can reference assets by `sprite_id` (atlas-stable UUID) or `asset` (raw file path).
+Sprites can reference assets by `sprite_id` (atlas-stable UUID) or `asset` (raw file path). Sprites with `animation` and `animation_source` fields will play frame-based animations from the declared animation files.
+
+The `atlases` field declares which atlas metadata files the scene uses (v0.2). If omitted (v0.1), the engine falls back to the legacy single atlas path.
 
 ### Step 3: Define Collision
 
@@ -257,12 +272,36 @@ end
 
 The key principle: **Lua provides intents, Rust resolves physics.** Your script says "I want to move right and jump." The engine's character controller handles acceleration, gravity, friction, and collision response. You never directly set position or velocity from Lua.
 
+You can also control sprite animations from Lua:
+
+```lua
+function on_update(dt)
+    local move_x = 0
+    -- ... input handling ...
+    engine.actor.set_intent(move_x, jump)
+
+    -- Switch animation based on state
+    if move_x ~= 0 then
+        engine.actor.play_animation("run")
+    else
+        engine.actor.play_animation("idle")
+    end
+
+    -- Check if a one-shot animation finished
+    if engine.actor.animation_finished then
+        engine.actor.play_animation("idle")
+    end
+end
+```
+
 Available input keys: `"left"`, `"right"`, `"up"`, `"down"`, `"space"`, `"w"`, `"a"`, `"s"`, `"d"`
 
 Available actor state (read-only from Lua):
 - `engine.actor.grounded` — is the character standing on solid ground?
 - `engine.actor.velocity_x` — current horizontal velocity
 - `engine.actor.velocity_y` — current vertical velocity
+- `engine.actor.current_animation` — name of active animation clip, or nil
+- `engine.actor.animation_finished` — true if a non-looping animation has completed
 
 ### Step 5: Pack Your Atlas
 
@@ -301,7 +340,7 @@ The engine never crashes from asset errors. Bad files are logged and the previou
 ```
 crates/
   sme_platform/    Thin winit wrapper (window creation, event loop)
-  sme_core/        Engine primitives (time, input, fidelity tiers)
+  sme_core/        Engine primitives (time, input, fidelity tiers, animation types)
   sme_render/      Sprite pipeline, camera, texture loading (wgpu)
   sme_devtools/    Debug overlay (egui), developer controls
   sme_game/        Game binary — main loop, scene/collision/atlas/Lua integration
@@ -310,6 +349,7 @@ crates/
 assets/
   scenes/          Scene JSON files
   collision/       Collision grid JSON files
+  animations/      Animation definition JSON files
   scripts/         Lua gameplay scripts
   textures/        Source sprite PNGs
   generated/       Atlas packer output (PNG + metadata JSON)
@@ -347,12 +387,14 @@ sme_atlas_packer (standalone binary, no engine dependencies)
 - [x] Fidelity tier system (Tier 0 / Tier 2)
 - [x] Simulation pause and single-step
 - [x] Input replay determinism tests
-- [x] 75 unit tests across all crates
+- [x] Multi-atlas support with per-scene atlas declarations
+- [x] Sprite sheet animation with deterministic frame timing
+- [x] Lua animation control API (play/stop/query)
+- [x] 99 unit tests across all crates
 
 ### Next Up (Post-v0.1)
 
 - [ ] **Audio system** — kira integration for music/SFX with bus routing
-- [ ] **Animation system** — sprite animation graphs with frame events
 - [ ] **Lightweight collision editor** — in-engine egui tool for painting collision grids
 - [ ] **Entity system** — multiple actors with Lua-authored behaviors
 - [ ] **Expanded Lua API** — spawn/despawn entities, event callbacks, world queries

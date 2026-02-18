@@ -10,7 +10,7 @@
 //! pixel dimensions needed to build a sprite quad.
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -80,11 +80,13 @@ pub struct AtlasSpriteEntry {
 
 #[derive(Debug, Clone)]
 pub struct AtlasRegistry {
+    #[allow(dead_code)]
     pub atlas_id: String,
     pub sprite_entries: HashMap<String, AtlasSpriteEntry>,
 }
 
 impl AtlasRegistry {
+    #[allow(dead_code)]
     pub fn resolve(&self, sprite_id: &str) -> Option<&AtlasSpriteEntry> {
         self.sprite_entries.get(sprite_id)
     }
@@ -188,6 +190,74 @@ fn validate_atlas(atlas: &AtlasFile) -> Result<(), String> {
     Ok(())
 }
 
+/// Registry that spans multiple atlases with a flat O(1) sprite lookup.
+///
+/// Each atlas is stored separately (keyed by its file path) so individual
+/// atlases can be hot-reloaded without rebuilding the entire index.
+/// The `sprite_index` provides a unified view across all loaded atlases.
+#[derive(Debug, Clone)]
+pub struct MultiAtlasRegistry {
+    registries: HashMap<String, AtlasRegistry>,
+    sprite_index: HashMap<String, AtlasSpriteEntry>,
+}
+
+impl MultiAtlasRegistry {
+    pub fn new() -> Self {
+        Self {
+            registries: HashMap::new(),
+            sprite_index: HashMap::new(),
+        }
+    }
+
+    /// Add an atlas keyed by its file path. Rejects duplicate sprite_ids across atlases.
+    pub fn add_atlas(&mut self, key: &str, registry: AtlasRegistry) -> Result<(), String> {
+        for sprite_id in registry.sprite_entries.keys() {
+            if self.sprite_index.contains_key(sprite_id) {
+                return Err(format!(
+                    "Duplicate sprite_id '{}' across atlases (adding '{}')",
+                    sprite_id, key
+                ));
+            }
+        }
+        for (sprite_id, entry) in &registry.sprite_entries {
+            self.sprite_index.insert(sprite_id.clone(), entry.clone());
+        }
+        self.registries.insert(key.to_string(), registry);
+        Ok(())
+    }
+
+    /// Remove an atlas and all its sprite_ids from the flat index.
+    pub fn remove_atlas(&mut self, key: &str) {
+        if let Some(registry) = self.registries.remove(key) {
+            for sprite_id in registry.sprite_entries.keys() {
+                self.sprite_index.remove(sprite_id);
+            }
+        }
+    }
+
+    /// Resolve a sprite_id across all loaded atlases.
+    pub fn resolve(&self, sprite_id: &str) -> Option<&AtlasSpriteEntry> {
+        self.sprite_index.get(sprite_id)
+    }
+
+    /// Return the set of unique texture paths across all loaded atlases.
+    pub fn texture_paths(&self) -> HashSet<String> {
+        self.sprite_index
+            .values()
+            .map(|e| e.texture_path.clone())
+            .collect()
+    }
+
+    pub fn atlas_count(&self) -> usize {
+        self.registries.len()
+    }
+
+    /// Check if any atlases are loaded.
+    pub fn is_empty(&self) -> bool {
+        self.registries.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +327,102 @@ mod tests {
         assert!(err.contains("rect overflows u32 range"));
 
         let _ = fs::remove_file(path);
+    }
+
+    fn make_test_registry(atlas_id: &str, sprites: &[(&str, &str)]) -> AtlasRegistry {
+        let mut sprite_entries = HashMap::new();
+        for &(id, tex) in sprites {
+            sprite_entries.insert(
+                id.to_string(),
+                AtlasSpriteEntry {
+                    texture_path: tex.to_string(),
+                    size_px: (32, 32),
+                    uv: [0.0, 0.0, 1.0, 1.0],
+                    pivot: (0.5, 0.5),
+                },
+            );
+        }
+        AtlasRegistry {
+            atlas_id: atlas_id.to_string(),
+            sprite_entries,
+        }
+    }
+
+    #[test]
+    fn multi_atlas_single_atlas_resolve() {
+        let mut multi = MultiAtlasRegistry::new();
+        let reg = make_test_registry(
+            "chars",
+            &[("sprite-a", "chars.png"), ("sprite-b", "chars.png")],
+        );
+        multi
+            .add_atlas("chars.json", reg)
+            .expect("add should succeed");
+
+        assert_eq!(multi.atlas_count(), 1);
+        assert!(multi.resolve("sprite-a").is_some());
+        assert!(multi.resolve("sprite-b").is_some());
+        assert!(multi.resolve("nonexistent").is_none());
+    }
+
+    #[test]
+    fn multi_atlas_cross_atlas_resolve() {
+        let mut multi = MultiAtlasRegistry::new();
+        let reg1 = make_test_registry("chars", &[("sprite-a", "chars.png")]);
+        let reg2 = make_test_registry("env", &[("sprite-b", "env.png")]);
+        multi.add_atlas("chars.json", reg1).expect("add chars");
+        multi.add_atlas("env.json", reg2).expect("add env");
+
+        assert_eq!(multi.atlas_count(), 2);
+        assert!(multi.resolve("sprite-a").is_some());
+        assert!(multi.resolve("sprite-b").is_some());
+
+        let paths = multi.texture_paths();
+        assert!(paths.contains("chars.png"));
+        assert!(paths.contains("env.png"));
+    }
+
+    #[test]
+    fn multi_atlas_rejects_duplicate_sprite_ids() {
+        let mut multi = MultiAtlasRegistry::new();
+        let reg1 = make_test_registry("chars", &[("sprite-a", "chars.png")]);
+        let reg2 = make_test_registry("env", &[("sprite-a", "env.png")]);
+        multi.add_atlas("chars.json", reg1).expect("add chars");
+
+        let err = multi
+            .add_atlas("env.json", reg2)
+            .expect_err("duplicate should fail");
+        assert!(err.contains("Duplicate sprite_id"));
+    }
+
+    #[test]
+    fn multi_atlas_remove_and_readd() {
+        let mut multi = MultiAtlasRegistry::new();
+        let reg = make_test_registry("chars", &[("sprite-a", "chars.png")]);
+        multi.add_atlas("chars.json", reg).expect("add");
+
+        assert!(multi.resolve("sprite-a").is_some());
+        multi.remove_atlas("chars.json");
+        assert!(multi.resolve("sprite-a").is_none());
+        assert_eq!(multi.atlas_count(), 0);
+
+        // Re-add should work
+        let reg2 = make_test_registry("chars_v2", &[("sprite-a", "chars_v2.png")]);
+        multi.add_atlas("chars.json", reg2).expect("re-add");
+        assert!(multi.resolve("sprite-a").is_some());
+    }
+
+    #[test]
+    fn multi_atlas_texture_paths_union() {
+        let mut multi = MultiAtlasRegistry::new();
+        let reg1 = make_test_registry("a", &[("s1", "tex1.png"), ("s2", "tex1.png")]);
+        let reg2 = make_test_registry("b", &[("s3", "tex2.png")]);
+        multi.add_atlas("a.json", reg1).unwrap();
+        multi.add_atlas("b.json", reg2).unwrap();
+
+        let paths = multi.texture_paths();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains("tex1.png"));
+        assert!(paths.contains("tex2.png"));
     }
 }

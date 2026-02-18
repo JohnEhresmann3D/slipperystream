@@ -2324,6 +2324,8 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
