@@ -1,3 +1,18 @@
+//! Collision underlay: a grid-based collision representation separate from visuals.
+//!
+//! The engine's "sprite-scene-first" model means art is authored as layered
+//! illustrations, but gameplay truth lives here in a simplified grid. This
+//! keeps collision logic fast and independent of visual complexity.
+//!
+//! Grid-based collision is chosen over polygon-based for two reasons:
+//!  1. **Performance** -- HashSet lookup per cell is O(1), no broad-phase needed
+//!  2. **Simplicity** -- 2D platformer levels map naturally to a tile grid
+//!
+//! The core algorithm is **axis-separable move-and-slide**: resolve X movement
+//! first against the grid, then resolve Y using the already-corrected X position.
+//! This prevents diagonal tunneling and produces the "slide along walls" behavior
+//! players expect from platformers.
+
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;

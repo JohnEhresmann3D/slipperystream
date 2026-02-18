@@ -1,3 +1,20 @@
+//! Rust <-> Lua bridge for gameplay scripting.
+//!
+//! Design contract: Lua scripts provide **movement intents** (direction + jump),
+//! never direct mutation of physics state. Rust owns the simulation truth --
+//! Lua only reads actor state (grounded, velocity) and writes into a
+//! `_intent` table that Rust reads back after `on_update(dt)` returns.
+//!
+//! Input is exposed via lookup tables (`_held` / `_just_pressed`) rather than
+//! per-key functions, so the Rust side can bulk-set the entire input snapshot
+//! in one pass without creating closures per key.
+//!
+//! Reload strategy: on file change (mtime polling) or manual trigger (R key),
+//! a **fresh Lua state** is created and the script is re-executed from scratch.
+//! This avoids stale globals and leaked state at the cost of losing any
+//! in-memory Lua variables -- acceptable because all persistent state lives
+//! in Rust (CharacterController, etc.).
+
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -241,6 +258,17 @@ impl LuaBridge {
         }
     }
 
+    /// Build the `engine` global table that Lua scripts interact with.
+    ///
+    /// Layout:
+    ///   engine.input._held        -- table of key->true for currently held keys
+    ///   engine.input._just_pressed -- table of key->true for edge-triggered presses
+    ///   engine.input.is_held(key)  -- convenience wrapper over _held lookup
+    ///   engine.input.is_just_pressed(key) -- convenience wrapper over _just_pressed
+    ///   engine.actor.grounded     -- read-only bool, set by Rust each frame
+    ///   engine.actor.velocity_x/y -- read-only floats, set by Rust each frame
+    ///   engine.actor.set_intent(move_x, jump_pressed) -- Lua writes intent here
+    ///   engine._intent            -- internal table read by Rust after on_update
     fn setup_engine_api(&self) -> LuaResult<()> {
         let lua = &self.lua;
         let engine = lua.create_table()?;

@@ -1,5 +1,15 @@
+//! Fidelity tier system for scalable visual quality.
+//!
+//! Tiers control rendering-only features (color grading, post-processing, etc.)
+//! and NEVER affect simulation, collision, or determinism. A replay recorded at
+//! Tier 0 must produce identical gameplay state at Tier 2.
+//!
+//! Currently two tiers are defined (Tier 1 is reserved for future mid-range):
+//! - Tier 0: Mobile-safe baseline -- no dynamic lights, no post-processing
+//! - Tier 2: PC polish -- warm color boost, optional bloom/vignette
+
 /// Fidelity tier controls optional rendering quality features.
-/// Tiers add visual polish — they NEVER change simulation or determinism.
+/// Tiers add visual polish -- they NEVER change simulation or determinism.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FidelityTier {
     /// Mobile-safe baseline: no dynamic lights, no post-processing.

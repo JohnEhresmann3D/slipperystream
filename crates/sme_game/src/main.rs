@@ -1,3 +1,20 @@
+//! Saturday Morning Engine -- main loop and application entry point.
+//!
+//! Architecture: winit drives the event loop via `ApplicationHandler`. All simulation
+//! runs inside `RedrawRequested` using a **fixed-timestep** model (see `TimeState`):
+//!
+//!   1. `begin_frame()` -- measure wall-clock delta, feed accumulator
+//!   2. `while should_step()` -- consume fixed-dt slices for deterministic simulation
+//!   3. Rebuild the sprite mesh from scene + debug overlays
+//!   4. Upload camera uniform, issue draw calls, composite egui overlay
+//!
+//! The engine uses a **Lua-first, Rust-fallback** controller pattern: each fixed step
+//! asks Lua for a movement intent; if Lua is unavailable (no script, parse error, etc.)
+//! an identical Rust controller takes over seamlessly.
+//!
+//! Hot reload: scene JSON, collision JSON, atlas metadata, and Lua scripts are all
+//! watched via mtime polling and reloaded at frame boundaries (between fixed steps).
+
 mod atlas;
 mod collision;
 mod controller;
@@ -37,6 +54,9 @@ const FALLBACK_TEXTURE_BYTES: &[u8] = include_bytes!("../../../assets/textures/t
 const DEBUG_WHITE_ASSET: &str = "__debug_white";
 const PLAYER_ASSET: &str = "__player";
 
+/// A contiguous run of indices that share the same texture binding.
+/// Draw calls are merged when consecutive quads use the same texture,
+/// minimizing GPU bind-group switches during the render pass.
 #[derive(Debug, Clone)]
 struct DrawCall {
     texture_key: Arc<str>,
@@ -58,6 +78,13 @@ struct GpuSpriteTexture {
     bind_group: wgpu::BindGroup,
 }
 
+/// All mutable engine state lives here. Constructed lazily in `ApplicationHandler::resumed`
+/// once the window and GPU surface are available.
+///
+/// Ownership is split into three conceptual groups:
+///  - **Core systems** (time, input, camera) -- updated every frame
+///  - **Content** (scene, collision, atlas, textures) -- loaded from disk, hot-reloadable
+///  - **GPU resources** (vertex/index/camera buffers, draw calls) -- rebuilt when content changes
 struct EngineState {
     window: Arc<Window>,
     gpu: GpuContext,
@@ -67,6 +94,7 @@ struct EngineState {
     sprite_pipeline: SpritePipeline,
     debug_overlay: DebugOverlay,
 
+    // --- Hot-reloadable content -------------------------------------------------
     scene_path: std::path::PathBuf,
     scene_watcher: SceneWatcher,
     scene: SceneFile,
@@ -84,6 +112,9 @@ struct EngineState {
     single_step_requested: bool,
     textures: HashMap<Arc<str>, GpuSpriteTexture>,
 
+    // --- Per-frame GPU mesh state -----------------------------------------------
+    // The sprite mesh is rebuilt on the CPU each frame, then streamed into these
+    // GPU buffers. Buffers grow (power-of-two) but never shrink.
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
@@ -304,6 +335,9 @@ impl EngineState {
         }
     }
 
+    /// Resolve a scene sprite to its atlas entry. Lookup chain:
+    ///  1. If `sprite_id` is set, look it up in the atlas registry (stable hash ID).
+    ///  2. Otherwise fall back to the raw `asset` path (legacy/direct-texture mode).
     fn resolve_sprite_entry(&self, sprite: &scene::SceneSprite) -> Option<AtlasSpriteEntry> {
         if let Some(sprite_id) = &sprite.sprite_id {
             let Some(registry) = &self.atlas_registry else {
@@ -1040,6 +1074,10 @@ fn add_quad(
     push_draw_call(draw_calls, Arc::from(spec.texture_key), draw_start, 6);
 }
 
+/// Append a draw call, merging with the previous one when the texture matches
+/// and indices are contiguous. This is the core of the batching strategy:
+/// scene sprites are emitted in layer order, so consecutive sprites sharing a
+/// texture atlas collapse into a single `draw_indexed` call.
 fn push_draw_call(
     draw_calls: &mut Vec<DrawCall>,
     texture_key: Arc<str>,

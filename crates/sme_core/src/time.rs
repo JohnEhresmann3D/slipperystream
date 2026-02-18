@@ -1,3 +1,20 @@
+//! Fixed-timestep simulation clock.
+//!
+//! The engine runs simulation at a locked 60 Hz (`fixed_dt = 1/60`). Each render
+//! frame, `begin_frame()` measures wall-clock elapsed time and feeds it into an
+//! accumulator. The game loop then calls `should_step()` in a while-loop, consuming
+//! one `fixed_dt` slice per step -- this guarantees deterministic simulation
+//! regardless of display refresh rate.
+//!
+//! **Spiral-of-death cap:** If a frame takes longer than `max_accumulator` (250ms),
+//! the excess time is discarded. Without this cap, a single slow frame would queue
+//! dozens of catch-up steps, which themselves take time, creating a feedback loop
+//! that makes the game unrecoverably slow.
+//!
+//! After all fixed steps are consumed, `end_frame()` computes `interpolation_alpha`
+//! (the fractional leftover in the accumulator) for optional visual interpolation
+//! between the last two simulation states.
+
 use std::time::Instant;
 
 const FPS_SAMPLE_COUNT: usize = 60;

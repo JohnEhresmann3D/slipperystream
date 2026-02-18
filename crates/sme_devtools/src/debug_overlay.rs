@@ -1,3 +1,18 @@
+//! Debug overlay rendered via egui on top of the game scene.
+//!
+//! Integration pattern: egui requires a three-phase render split because
+//! `egui_wgpu::Renderer::render()` needs a `RenderPass<'static>`, while
+//! `begin_render_pass` borrows the encoder. The phases are:
+//!
+//!   1. `prepare()` -- run egui UI logic, produce tessellated primitives
+//!   2. `upload()`  -- upload textures and update GPU buffers (borrows encoder mutably)
+//!   3. `paint()`   -- render into a new render pass with `forget_lifetime()`
+//!   4. `cleanup()` -- free textures egui no longer references
+//!
+//! The overlay only runs UI logic when `visible` is true (toggled by F3),
+//! but egui event handling is always active so the overlay can intercept
+//! clicks when it is shown.
+
 use sme_core::time::TimeState;
 use winit::window::Window;
 

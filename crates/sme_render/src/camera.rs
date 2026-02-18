@@ -1,3 +1,9 @@
+//! 2D orthographic camera that produces a view-projection matrix for the sprite pipeline.
+//!
+//! The camera defines the visible world-space region as a centered rectangle
+//! around `position`, scaled by `zoom`. The resulting `CameraUniform` is uploaded
+//! to a GPU uniform buffer each frame and consumed by the sprite vertex shader.
+
 use glam::{Mat4, Vec2};
 
 #[repr(C)]

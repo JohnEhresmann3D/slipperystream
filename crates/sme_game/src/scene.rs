@@ -1,3 +1,17 @@
+//! Scene definition and hot-reload watcher for the sprite-scene-first world model.
+//!
+//! Scenes are the engine's primary content unit: ordered layers of sprites with
+//! parallax, depth sorting, and foreground occlusion. This is NOT a tilemap --
+//! art is authored as layered illustrations positioned in world space.
+//!
+//! Each sprite references its texture via either a raw `asset` path (legacy) or
+//! a stable `sprite_id` resolved through the atlas registry (preferred).
+//!
+//! `SceneWatcher` implements hot reload via filesystem mtime polling. This is
+//! deliberately simple (no inotify/ReadDirectoryChanges) for cross-platform
+//! reliability. The watcher is checked once per frame at the top of the
+//! simulation loop, which is a safe reload boundary.
+
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;

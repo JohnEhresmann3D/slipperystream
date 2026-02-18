@@ -1,3 +1,14 @@
+//! Input state tracking with both edge-triggered and level-triggered queries.
+//!
+//! - **Level-triggered (held):** `is_held(key)` returns true every frame the key
+//!   is physically down. Used for continuous actions like movement.
+//!
+//! - **Edge-triggered (just_pressed / just_released):** These are true only during
+//!   the frame the transition happened. They are cleared by `end_frame()`, which
+//!   the main loop calls only after at least one fixed simulation step has consumed
+//!   them. This prevents a press from being silently lost on a frame that has zero
+//!   simulation steps (when the accumulator hasn't built up enough time).
+
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
