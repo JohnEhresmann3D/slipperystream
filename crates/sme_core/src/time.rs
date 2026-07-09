@@ -15,7 +15,9 @@
 //! (the fractional leftover in the accumulator) for optional visual interpolation
 //! between the last two simulation states.
 
-use std::time::Instant;
+// web-time resolves to std::time on native targets and to a
+// performance.now()-backed clock on wasm32, where std's Instant panics.
+use web_time::Instant;
 
 const FPS_SAMPLE_COUNT: usize = 60;
 

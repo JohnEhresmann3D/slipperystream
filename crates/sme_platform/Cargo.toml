@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 winit = { workspace = true }
 log = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Window"] }

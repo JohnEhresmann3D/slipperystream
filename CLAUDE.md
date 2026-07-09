@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Slipstream Governance (read first)
+
+Read `MANIFEST.md` at session start. It lists which Slipstream personas,
+constitutions, and skills are active. The base constitution at
+`slipstream/core/constitution/BASE_CONSTITUTION.md` is **supreme** — every
+persona, skill, and instruction here is subordinate to it. Active personas
+(producer, game_designer, gameplay_engineer) live in `.claude/agents/`; adopt
+one by name. Log decisions and human rejections to `STATE.md`.
+
 ## Project Overview
 
 **Saturday Morning Engine** — an opinionated 2D/2.5D game engine targeting a "Saturday morning cartoon" aesthetic (Cuphead-adjacent staging, Scott Pilgrim-adjacent readability). This is a **style engine**, not a general-purpose engine.

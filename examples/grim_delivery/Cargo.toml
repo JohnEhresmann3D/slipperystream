@@ -1,0 +1,33 @@
+[package]
+name = "grim_delivery"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[[bin]]
+name = "grim_delivery"
+path = "src/main.rs"
+
+[dependencies]
+sme_platform = { path = "../../crates/sme_platform" }
+sme_core = { path = "../../crates/sme_core" }
+sme_render = { path = "../../crates/sme_render" }
+winit = { workspace = true }
+wgpu = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = { workspace = true }
+pollster = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+console_log = { workspace = true }
+console_error_panic_hook = { workspace = true }
+web-sys = { workspace = true, features = ["HtmlCanvasElement", "Element", "Node"] }

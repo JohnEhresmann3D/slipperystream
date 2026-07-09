@@ -1,0 +1,37 @@
+{
+  "_comment": "Example Tier-A enforcement for Slipstream on Claude Code. Copy the blocks you want into .claude/settings.json and adapt the patterns to your project. Each hook names the Slipstream concept it enforces. PreToolUse hooks receive the tool input as JSON on stdin; exit code 2 blocks the call and feeds stderr back to Claude.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "_comment": "credential_guard — base constitution §2.3. Blocks bash commands that read common secret locations.",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys,re; cmd=json.load(sys.stdin).get('tool_input',{}).get('command',''); sys.exit(2 if re.search(r'\\.env\\b|secrets/|id_rsa|\\.aws/credentials', cmd) else 0)\" || { echo 'credential_guard: command touches a secret location. Escalate to a human (BASE_CONSTITUTION §2.3).' >&2; exit 2; }"
+          }
+        ]
+      },
+      {
+        "_comment": "destructive_bash_guard — base constitution §2.1 (irreversible actions). Blocks force-push, hard reset, and recursive force deletes.",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys,re; cmd=json.load(sys.stdin).get('tool_input',{}).get('command',''); sys.exit(2 if re.search(r'push\\s+(-f|--force)|reset\\s+--hard|rm\\s+-[a-z]*r[a-z]*f', cmd) else 0)\" || { echo 'destructive_bash_guard: irreversible action. Present it to the human instead of running it (BASE_CONSTITUTION §2.1).' >&2; exit 2; }"
+          }
+        ]
+      },
+      {
+        "_comment": "Example of promoting a persona prohibits entry: gameplay_engineer's ship_prototype_code_to_production, expressed as 'nothing under prototypes/ gets copied into src/'. Adapt paths to your repo.",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys,re; cmd=json.load(sys.stdin).get('tool_input',{}).get('command',''); sys.exit(2 if re.search(r'(cp|mv)\\s+.*prototypes?/.*\\s+.*src/', cmd) else 0)\" || { echo 'prototype_guard: prototypes are disposable and are rewritten, not promoted (gameplay_engineer constitution).' >&2; exit 2; }"
+          }
+        ]
+      }
+    ]
+  }
+}

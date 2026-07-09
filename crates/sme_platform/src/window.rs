@@ -32,5 +32,38 @@ pub fn create_window(event_loop: &ActiveEventLoop, config: &PlatformConfig) -> A
     let window = event_loop
         .create_window(attrs)
         .expect("Failed to create window");
+
+    // On the web, winit creates a detached <canvas>; it renders nothing and
+    // receives no input until it is attached to the DOM. Append it to
+    // #sme-container if the page provides one, else to <body>.
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        let canvas = window.canvas().expect("winit window has no canvas");
+        canvas
+            .set_attribute("tabindex", "0")
+            .expect("set canvas tabindex");
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .expect("no DOM document");
+        let parent = document
+            .get_element_by_id("sme-container")
+            .or_else(|| document.body().map(|b| b.into()))
+            .expect("no element to attach canvas to");
+        parent
+            .append_child(&canvas)
+            .expect("failed to attach canvas");
+        let _ = canvas.focus();
+
+        // The size requested at window creation doesn't apply while the
+        // canvas is detached from the DOM — it stays 1x1. Re-request it now
+        // that the canvas is attached; this also fires the Resized event the
+        // renderer uses to configure the surface.
+        let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
+            config.width,
+            config.height,
+        ));
+    }
+
     Arc::new(window)
 }
