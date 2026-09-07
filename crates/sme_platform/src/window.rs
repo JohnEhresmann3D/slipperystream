@@ -59,10 +59,8 @@ pub fn create_window(event_loop: &ActiveEventLoop, config: &PlatformConfig) -> A
         // canvas is detached from the DOM — it stays 1x1. Re-request it now
         // that the canvas is attached; this also fires the Resized event the
         // renderer uses to configure the surface.
-        let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
-            config.width,
-            config.height,
-        ));
+        let _ =
+            window.request_inner_size(winit::dpi::LogicalSize::new(config.width, config.height));
     }
 
     Arc::new(window)

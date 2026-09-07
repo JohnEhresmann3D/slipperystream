@@ -8,5 +8,9 @@ license.workspace = true
 winit = { workspace = true }
 log = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Window"] }

@@ -60,25 +60,54 @@ impl TimeState {
     }
 
     pub fn begin_frame(&mut self) {
+        let elapsed = self.measure_elapsed();
+        self.advance_frame(elapsed, false, false);
+    }
+
+    /// Debug pause discards simulation debt but still measures actual frame time.
+    /// `single_step` queues exactly one tick; callers must still call `should_step`.
+    pub fn begin_paused_frame(&mut self, single_step: bool) {
+        let elapsed = self.measure_elapsed();
+        self.advance_frame(elapsed, true, single_step);
+    }
+
+    /// Rebase after focus/lifecycle transitions; hidden time is not simulation time.
+    pub fn reset_elapsed(&mut self) {
+        self.last_instant = Instant::now();
+        self.accumulator = 0.0;
+        self.interpolation_alpha = 0.0;
+    }
+
+    fn measure_elapsed(&mut self) -> f64 {
         let now = Instant::now();
-        self.real_dt = now.duration_since(self.last_instant).as_secs_f64();
+        let elapsed = now.duration_since(self.last_instant).as_secs_f64();
         self.last_instant = now;
+        elapsed
+    }
 
-        // Spiral-of-death cap
-        if self.real_dt > self.max_accumulator {
-            log::warn!(
-                "Frame took {:.1}ms — capping accumulator to {}ms",
-                self.real_dt * 1000.0,
-                self.max_accumulator * 1000.0
-            );
-            self.real_dt = self.max_accumulator;
+    fn advance_frame(&mut self, elapsed: f64, paused: bool, single_step: bool) {
+        // Retain public configuration compatibility while preventing invalid settings
+        // from creating infinite tick loops. A future builder can make these private.
+        if !self.fixed_dt.is_finite() || self.fixed_dt <= 0.0 {
+            self.fixed_dt = 1.0 / 60.0;
         }
-
-        self.accumulator += self.real_dt;
+        if !self.max_accumulator.is_finite() || self.max_accumulator < self.fixed_dt {
+            self.max_accumulator = 0.25_f64.max(self.fixed_dt);
+        }
+        self.real_dt = if elapsed.is_finite() {
+            elapsed.max(0.0)
+        } else {
+            0.0
+        };
+        if paused {
+            self.accumulator = if single_step { self.fixed_dt } else { 0.0 };
+        } else {
+            // Cap the total, including debt left by a caller that stopped stepping.
+            self.accumulator = (self.accumulator + self.real_dt).min(self.max_accumulator);
+        }
         self.steps_this_frame = 0;
         self.frame_count += 1;
-
-        // FPS smoothing
+        // Diagnostics retain the uncapped wall-clock delta, including long stalls.
         self.fps_samples[self.fps_sample_index] = self.real_dt;
         self.fps_sample_index = (self.fps_sample_index + 1) % FPS_SAMPLE_COUNT;
         let avg_dt: f64 = self.fps_samples.iter().sum::<f64>() / FPS_SAMPLE_COUNT as f64;
@@ -114,19 +143,7 @@ impl TimeState {
     /// Simulate a frame with a known delta time, bypassing `Instant::now()`.
     /// Mirrors the logic of `begin_frame()` but with an injected dt.
     fn simulate_frame(&mut self, dt: f64) {
-        self.real_dt = dt;
-        if self.real_dt > self.max_accumulator {
-            self.real_dt = self.max_accumulator;
-        }
-        self.accumulator += self.real_dt;
-        self.steps_this_frame = 0;
-        self.frame_count += 1;
-
-        self.fps_samples[self.fps_sample_index] = self.real_dt;
-        self.fps_sample_index = (self.fps_sample_index + 1) % FPS_SAMPLE_COUNT;
-        let avg_dt: f64 = self.fps_samples.iter().sum::<f64>() / FPS_SAMPLE_COUNT as f64;
-        self.smoothed_frame_time_ms = avg_dt * 1000.0;
-        self.smoothed_fps = if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 };
+        self.advance_frame(dt, false, false);
     }
 }
 
@@ -135,6 +152,52 @@ mod tests {
     use super::*;
 
     const EPSILON: f64 = 1e-9;
+
+    #[test]
+    fn paused_frames_have_no_debt_and_single_step_counts_only_real_ticks() {
+        let mut ts = TimeState::new();
+        for _ in 0..600 {
+            ts.advance_frame(0.05, true, false);
+            assert!(!ts.should_step());
+            ts.end_frame();
+            assert_eq!(ts.interpolation_alpha, 0.0);
+        }
+        assert_eq!(ts.fixed_step_count, 0);
+        ts.advance_frame(10.0, true, true);
+        assert!(ts.should_step());
+        assert!(!ts.should_step());
+        assert_eq!(ts.fixed_step_count, 1);
+        ts.advance_frame(ts.fixed_dt, false, false);
+        assert!(ts.should_step());
+        assert!(!ts.should_step());
+    }
+
+    #[test]
+    fn undrained_debt_is_bounded_and_stalls_are_measured() {
+        let mut ts = TimeState::new();
+        for _ in 0..60 {
+            ts.simulate_frame(1.0);
+        }
+        assert_eq!(ts.accumulator, ts.max_accumulator);
+        assert_eq!(ts.smoothed_fps, 1.0);
+        let mut ticks = 0;
+        while ts.should_step() {
+            ticks += 1;
+        }
+        assert_eq!(ticks, 15);
+    }
+
+    #[test]
+    fn invalid_configuration_is_normalized_and_focus_reset_discards_debt() {
+        let mut ts = TimeState::new();
+        ts.fixed_dt = 0.0;
+        ts.max_accumulator = f64::NAN;
+        ts.simulate_frame(1.0);
+        assert!(ts.fixed_dt > 0.0 && ts.max_accumulator.is_finite());
+        ts.reset_elapsed();
+        assert!(!ts.should_step());
+        assert_eq!(ts.interpolation_alpha, 0.0);
+    }
 
     #[test]
     fn test_new_defaults() {
@@ -190,8 +253,8 @@ mod tests {
         let mut ts = TimeState::new();
         ts.simulate_frame(1.0); // 1 second, way over max_accumulator of 0.25
 
-        // real_dt should be capped
-        assert!((ts.real_dt - 0.25).abs() < EPSILON);
+        // Actual elapsed time stays visible even though simulation debt is capped.
+        assert!((ts.real_dt - 1.0).abs() < EPSILON);
 
         // Count how many steps are consumed
         let mut step_count = 0u32;

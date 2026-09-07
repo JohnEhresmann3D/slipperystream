@@ -2078,6 +2078,8 @@ name = "sme_platform"
 version = "0.1.0"
 dependencies = [
  "log",
+ "pollster",
+ "wasm-bindgen-futures",
  "web-sys",
  "winit",
 ]

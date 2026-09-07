@@ -1,7 +1,11 @@
 # Web (wasm) Build
 
-The engine and `grim_delivery` compile to `wasm32-unknown-unknown` and run in
-the browser via WebGPU, with WebGL2 as the fallback backend.
+The reusable engine crates and `grim_delivery` compile to
+`wasm32-unknown-unknown` and run in the browser via **WebGL2** through wgpu.
+The current source explicitly selects GL on wasm; automatic WebGPU fallback is
+not enabled. Standalone game projects live outside this workspace and pin an engine
+Git revision. Run `python scripts/verify_engine.py --browser` from the repository
+root for build/lint/tests and a local-only browser rendering smoke.
 
 ## Prerequisites
 
@@ -26,7 +30,7 @@ GitHub Pages, any static host).
 | Concern | Native | Web (wasm32) |
 |---|---|---|
 | GPU init | `GpuContext::new` (blocking, pollster) | `GpuContext::new_async` awaited in a spawned future; finished `GameApp` returns to the loop as a winit user event |
-| Backends | DX12 / Vulkan | `BROWSER_WEBGPU` with `GL` (WebGL2) fallback; WebGL2 uses `downlevel_webgl2_defaults` limits |
+| Backends | DX12 / Vulkan | `GL` (WebGL2), using `downlevel_webgl2_defaults` limits |
 | Clock | `std::time::Instant` | `web_time::Instant` (performance.now) — swapped in `sme_core::time` for both targets |
 | Event loop | `run_app` (blocks) | `spawn_app` (returns; browser drives via requestAnimationFrame) |
 | Canvas | n/a | `sme_platform::window::create_window` attaches winit's canvas to `#sme-container` (or `<body>`) and focuses it |

@@ -1,8 +1,21 @@
 # Saturday Morning Engine (SlipperyStream)
 
-A purpose-built 2D/2.5D game engine targeting a "Saturday morning cartoon" aesthetic — Cuphead-adjacent staging, Scott Pilgrim-adjacent readability. Rust engine core with Lua gameplay scripting for fast iteration.
+A lightweight, web-first (not web-only) 2D/2.5D game engine targeting a "Saturday morning cartoon" aesthetic — Cuphead-adjacent staging, Scott Pilgrim-adjacent readability. Rust engine core and browser gameplay, with native Lua 5.4 scripting in the sandbox.
 
 This is a **style engine**, not a general-purpose engine. Art is authored as layered sprite illustrations; collision and gameplay run on a separate simplified representation (the "collision underlay").
+
+## Try the engine
+
+```sh
+cargo run -p sme_game                 # Native Lua sandbox
+cargo run -p grim_delivery            # Native Rust example
+python scripts/verify_engine.py --browser  # Build/test + browser rendering smoke
+# Or: cd examples/grim_delivery && trunk serve
+```
+
+See [web setup](docs/setup/web_build.md) and the
+[shared engine APIs](docs/ENGINE_FOUNDATION.md). Standalone games own their code,
+assets and design documents in separate repositories and pin an engine revision.
 
 ## License
 
@@ -10,9 +23,16 @@ Apache License 2.0. See `LICENSE` for full terms and `NOTICE` for attribution.
 
 ---
 
-## Current Status: M5 Complete (v0.1 Feature-Complete)
+## Current Status: Runnable native/web foundation
 
-All five milestones are implemented and passing 99 tests across 6 crates. Post-v0.1 work has added multi-atlas support and sprite sheet animation.
+The original M1–M5 implementation is supplemented by multi-atlas/animation support,
+native + browser examples, and the [engine foundation pass](docs/ENGINE_FOUNDATION.md):
+shared app runner, typed local events, portable authored-data parsers, input/timing
+fixes and transactional asset reload. **122 engine workspace tests pass**. See that document for verified coverage and remaining limitations;
+this is not a claim that every historical scope item is implemented.
+
+Encrypted telemetry is planned only. No telemetry collection or transmission exists.
+The [web-first review](docs/WEB_FIRST_ENGINE_REVIEW.md) records the broader roadmap.
 
 | Milestone | Status | Summary |
 |-----------|--------|---------|

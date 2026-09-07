@@ -15,13 +15,18 @@ one by name. Log decisions and human rejections to `STATE.md`.
 
 **Saturday Morning Engine** — an opinionated 2D/2.5D game engine targeting a "Saturday morning cartoon" aesthetic (Cuphead-adjacent staging, Scott Pilgrim-adjacent readability). This is a **style engine**, not a general-purpose engine.
 
-**Current status:** Pre-code planning phase. No source code exists yet. All documents are in `docs/planning/` and `.claude/`.
+**Current status:** Implemented Rust engine with native sandbox/Lua and native + WASM
+examples. Web-first, lightweight, not web-only; preserve desktop publishing options.
+Source and `STATE.md` take precedence over historical planning claims. Current shared
+runner, event queues, input/timing and authored-data APIs are documented in
+`docs/ENGINE_FOUNDATION.md`. Telemetry with encryption is planned only, not implemented.
 
 ## Architecture Summary
 
 The engine uses a **sprite-scene-first** world model: art is authored as layered illustrations, while collision and gameplay run on a separate simplified representation (the "collision underlay").
 
-**Language:** Rust for engine core (rendering, platform, performance, audio, assets) + Lua for gameplay logic (fast iteration, hot reload via mlua/LuaJIT).
+**Language:** Rust for engine/core and current browser gameplay; native sandbox Lua 5.4
+via mlua (not LuaJIT). Native Lua does not currently build for the WASM browser target.
 
 ### Module Hierarchy (top-down dependency)
 
@@ -46,12 +51,13 @@ Game
 ### Toolchain
 
 - **Build:** Cargo workspace
-- **Rendering:** wgpu (proposed)
-- **Windowing/Input:** winit (proposed)
-- **Lua runtime:** mlua with LuaJIT backend (proposed)
-- **Debug UI:** egui (proposed)
-- **Audio:** kira (proposed)
-- **CI:** GitHub Actions — `cargo build`, `cargo test`, `cargo clippy`, `cargo fmt --check` (proposed)
+- **Rendering:** wgpu 24; WebGL2 on web, DX12/Vulkan selected on native
+- **Windowing/Input:** winit 0.30; shared thin runner in `sme_platform::app`
+- **Lua runtime:** mlua with vendored Lua 5.4, native sandbox only
+- **Debug UI:** egui 0.31
+- **Audio:** no shared engine audio runtime yet; standalone games own their audio backends
+- **Verification:** workspace tests/build/clippy/fmt and scripts in `scripts/`.
+  GitHub Actions CI remains future work; local scripts are not an installed CI service.
 
 See `docs/planning/implementation_decisions.md` for full decision status (accepted vs proposed).
 
@@ -113,9 +119,9 @@ This repo has a Claude Code skills/agents framework under `.claude/skills/` and 
 
 **Decision discipline:** Major decisions must be recorded in `implementation_decisions.md` with Decision / Rationale / Alternatives / Revisit condition.
 
-## Build Commands (Expected — Not Yet Scaffolded)
+## Build Commands
 
-Once the Rust project is scaffolded, standard Cargo commands will apply:
+Run from repository root:
 
 ```bash
 cargo build              # Debug build
@@ -127,8 +133,14 @@ cargo clippy             # Lint
 cargo fmt                # Format
 ```
 
-## Known Gaps (Pre-Scaffolding Blockers)
+## Current Boundaries / Next Work
 
-1. Proposed decisions 3-12 in `implementation_decisions.md` need approval (wgpu, winit, egui, mlua, kira, etc.)
-2. Asset format specs needed before M2 starts (scene JSON schema, collision format, atlas metadata)
-3. GUID generation strategy needs documenting
+1. Portable byte parsers exist; a shared browser asset fetch/cache and packaged authored
+   scene demo are next. Do not mistake filesystem hot reload for browser asset loading.
+2. Event queues are local, typed and bounded. Future encrypted telemetry must remain
+   unimplemented until receiver, privacy and key-management requirements are approved.
+3. GPU failure/recovery UX, CI, export manifests and packaging budgets remain future work.
+4. Standalone games live in separate repositories. Do not change controller feel or
+   promote disposable example gameplay into production merely by extracting it.
+5. Historical plans below `docs/planning/` contain proposed features that may not exist.
+   Verify actual source and current state before asserting implementation.

@@ -51,3 +51,42 @@ rejections). Append new entries; do not rewrite history.
   piccolo) for one codebase across native+web; (b) keep Lua and ship web
   without scripting for now; (c) dual-target. Owner asked for a recommendation
   — pending write-up. Blocks the web deliverable.
+
+## 2026-09-07 — Lightweight native/web foundation
+
+- **Owner direction:** Web-first, not web-only. Preserve lightweight native desktop
+  publishing and incremental upgrades. No engine/language migration. Rust is the
+  demonstrated browser gameplay path; native Lua 5.4 remains supported. This resolves
+  the earlier scripting blocker for Rust browser games, not browser Lua itself.
+- **Source correction:** Current WASM backend is WebGL2 only, not mixed WebGPU fallback.
+- **Reliability:** Shared captured-press/release input policy, per-tick edge consumption,
+  focus cancellation, explicit pause/single-step clock, bounded total accumulator and
+  uncapped elapsed diagnostics. No controller tuning or collision-solver replacement.
+- **Reuse:** Scene/atlas/animation registry extracted into sme_core with compatibility
+  facades; bounded byte parsers for scenes, atlases, animation and collision. Thin
+  GameHost native/web runner and typed bounded FIFO EventQueue added. Overflow and
+  dispatch boundaries are explicit; no global callbacks or networking.
+- **Assets:** Native scene/atlas/animation reload stages and validates candidates and
+  textures before replacing live state. Fallible bounded image decoding, same-path
+  texture refresh, collision construction validation and duration-overflow rejection.
+- **Telemetry:** Owner requested eventual encrypted information export, then explicitly
+  deferred implementation. Receiver/privacy/key-management design remains open. No
+  collector, encryption implementation, credentials or data transmission was added.
+- **Dependencies:** Only existing pollster/wasm-bindgen-futures versions gained direct
+  target-specific platform edges. No new external crate/version for this foundation.
+- **Verification:** 122 engine workspace tests after game separation; native build,
+  clippy/fmt, Grim WASM build/browser rendering smoke, native startup and transactional
+  reload failure/recovery tests. Reports are ignored local artifacts, not human playtests.
+- **Next:** Shared browser asset fetch/cache, authored web demo, GPU recovery, CI and
+  export tooling. Native Steam services remain optional future work.
+
+## 2026-09-07 — Owner-authorized repository separation and publication
+
+- Owner authorized pushing reusable engine updates to the existing public origin and
+  creating a separate **private** game repository. Game source, music and design files
+  are excluded from the engine commit; games reference an exact engine Git revision.
+- Previously uncommitted mixed-workspace game logs were preserved in the private game's
+  history archive and ignored local split backup, rather than exposing them publicly.
+  All previously committed engine state entries above remain preserved.
+- Source assets are copied and hash-verified before legacy paths are archived locally.
+  No force push, public game release, audio regeneration or save-data migration.

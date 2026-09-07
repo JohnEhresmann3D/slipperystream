@@ -1,1 +1,2 @@
-dist/\n.trunk/
+dist/
+.trunk/

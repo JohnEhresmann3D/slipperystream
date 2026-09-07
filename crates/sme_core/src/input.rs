@@ -4,9 +4,8 @@
 //!   is physically down. Used for continuous actions like movement.
 //!
 //! - **Edge-triggered (just_pressed / just_released):** These are true only during
-//!   the frame the transition happened. They are cleared by `end_frame()`, which
-//!   the main loop calls only after at least one fixed simulation step has consumed
-//!   them. This prevents a press from being silently lost on a frame that has zero
+//!   next fixed tick after the transition. They are cleared by `end_tick()`, which
+//!   the main loop calls after each fixed simulation step has consumed them. This prevents a press from being silently lost on a frame that has zero
 //!   simulation steps (when the accumulator hasn't built up enough time).
 
 use std::collections::HashSet;
@@ -61,6 +60,23 @@ impl InputState {
         }
     }
 
+    /// Shared host policy: UI capture suppresses presses, never releases.
+    pub fn handle_key(&mut self, key: Key, pressed: bool, ui_captured: bool) {
+        if !pressed {
+            self.key_up(key);
+        } else if !ui_captured {
+            self.key_down(key);
+        }
+    }
+
+    /// Focus loss cancels held keys/buttons and pending edges, without fake actions.
+    pub fn cancel_all(&mut self) {
+        self.held.clear();
+        self.mouse_held.clear();
+        self.end_tick();
+        // Cancel actions, not the last known pointer location; retain allocations.
+    }
+
     pub fn key_down(&mut self, key: Key) {
         if self.held.insert(key) {
             self.just_pressed.insert(key);
@@ -93,6 +109,11 @@ impl InputState {
         self.just_pressed.contains(&key)
     }
 
+    /// Consume a host/UI shortcut independently of whether simulation is paused.
+    pub fn take_just_pressed(&mut self, key: Key) -> bool {
+        self.just_pressed.remove(&key)
+    }
+
     pub fn is_just_released(&self, key: Key) -> bool {
         self.just_released.contains(&key)
     }
@@ -109,11 +130,18 @@ impl InputState {
         self.mouse_just_released.contains(&btn)
     }
 
-    pub fn end_frame(&mut self) {
+    /// Consume edges after EACH fixed tick, not after presentation. Zero-step
+    /// frames must leave them pending. Held input survives catch-up ticks.
+    pub fn end_tick(&mut self) {
         self.just_pressed.clear();
         self.just_released.clear();
         self.mouse_just_pressed.clear();
         self.mouse_just_released.clear();
+    }
+
+    /// Compatibility alias. Prefer `end_tick` in fixed-step hosts.
+    pub fn end_frame(&mut self) {
+        self.end_tick();
     }
 }
 
@@ -126,6 +154,40 @@ impl Default for InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_step_frames_preserve_edges_and_catchup_consumes_once() {
+        let mut input = InputState::new();
+        input.handle_key(Key::F3, true, false);
+        // No tick/presentation callback: the edge stays pending.
+        assert!(input.is_just_pressed(Key::F3));
+        let mut presses = 0;
+        for _ in 0..3 {
+            presses += usize::from(input.is_just_pressed(Key::F3));
+            input.end_tick();
+            assert!(input.is_held(Key::F3));
+        }
+        assert_eq!(presses, 1);
+        assert!(!input.is_just_pressed(Key::F3)); // independent of render success
+    }
+
+    #[test]
+    fn ui_captured_release_and_focus_loss_cannot_leave_stuck_input() {
+        let mut input = InputState::new();
+        input.handle_key(Key::A, true, true);
+        assert!(!input.is_held(Key::A));
+        input.handle_key(Key::A, true, false);
+        input.handle_key(Key::A, false, true);
+        assert!(!input.is_held(Key::A));
+        input.handle_key(Key::D, true, false);
+        input.mouse_down(MouseBtn::Left);
+        input.mouse_position = (25.0, 35.0);
+        input.cancel_all();
+        assert_eq!(input.mouse_position, (25.0, 35.0));
+        assert!(!input.is_held(Key::D));
+        assert!(!input.is_mouse_held(MouseBtn::Left));
+        assert!(!input.is_just_pressed(Key::D));
+    }
 
     #[test]
     fn test_key_down_sets_held_and_just_pressed() {

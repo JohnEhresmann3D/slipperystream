@@ -129,8 +129,12 @@ struct AnimationFrameJson {
 pub fn load_animation_file(path: &Path) -> Result<AnimationFile, String> {
     let raw = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read animation file {}: {e}", path.display()))?;
-    let json: AnimationFileJson = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse animation file {}: {e}", path.display()))?;
+    parse_animation(raw.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Portable parser for embedded or browser-fetched animation definitions.
+pub fn parse_animation(bytes: &[u8]) -> Result<AnimationFile, String> {
+    let json: AnimationFileJson = crate::asset_data::parse_json(bytes, "animation")?;
     validate_animation_json(&json)?;
 
     let mut animations = HashMap::new();
@@ -181,6 +185,11 @@ fn validate_animation_json(json: &AnimationFileJson) -> Result<(), String> {
                 return Err(format!(
                     "Animation validation failed: clip '{}' frame {} has empty sprite_id",
                     name, i
+                ));
+            }
+            if frame.duration_ms > u64::MAX / 1000 {
+                return Err(format!(
+                    "Animation '{name}' frame {i} duration overflows microseconds"
                 ));
             }
             if frame.duration_ms == 0 {

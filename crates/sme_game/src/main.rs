@@ -323,12 +323,20 @@ impl EngineState {
                             Ok(registry) => {
                                 if let Err(err) = new_multi.add_atlas(atlas_path_str, registry) {
                                     log::error!("Scene reload ({reason}): atlas add error: {err}");
+                                    return;
                                 }
                             }
                             Err(err) => {
                                 log::error!("Scene reload ({reason}): atlas load error: {err}");
+                                return;
                             }
                         }
+                    } else if !scene_candidate.atlases.is_empty() {
+                        log::error!(
+                            "Scene reload ({reason}): missing atlas {}",
+                            atlas_path.display()
+                        );
+                        return;
                     }
                     new_atlas_paths.push(atlas_path);
                 }
@@ -345,14 +353,28 @@ impl EngineState {
                 for anim_path_str in &scene_candidate.animations {
                     let anim_path = std::path::PathBuf::from(anim_path_str);
                     new_anim_watchers.push(SceneWatcher::new(anim_path.clone()));
-                    if anim_path.exists() {
-                        if let Err(err) = new_anim_registry.load_file(&anim_path) {
-                            log::error!("Scene reload ({reason}): anim load error: {err}");
-                        }
+                    if let Err(err) = new_anim_registry.load_file(&anim_path) {
+                        log::error!("Scene reload ({reason}): anim load error: {err}");
+                        return;
                     }
                     new_anim_paths.push(anim_path);
                 }
 
+                let staged = match stage_scene_textures(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &self.sprite_pipeline,
+                    &scene_candidate,
+                    &new_multi,
+                    &new_anim_registry,
+                ) {
+                    Ok(textures) => textures,
+                    Err(err) => {
+                        log::error!("Scene reload ({reason}): {err}");
+                        return;
+                    }
+                };
+                self.commit_textures(staged);
                 self.multi_atlas = new_multi;
                 self.atlas_paths = new_atlas_paths;
                 self.atlas_watchers = new_atlas_watchers;
@@ -404,15 +426,32 @@ impl EngineState {
         let atlas_key = atlas_path.to_string_lossy().to_string();
         match load_atlas_from_path(atlas_path) {
             Ok(registry_candidate) => {
-                self.multi_atlas.remove_atlas(&atlas_key);
-                if let Err(err) = self.multi_atlas.add_atlas(&atlas_key, registry_candidate) {
-                    log::error!("Atlas reload failed ({reason}): {err}");
-                    return;
-                }
-                if let Err(err) = validate_scene_sprite_references(&self.scene, &self.multi_atlas) {
-                    log::error!("Atlas reload failed ({reason}): {err}");
-                    return;
-                }
+                let candidate = match self
+                    .multi_atlas
+                    .with_replacement(&atlas_key, registry_candidate)
+                {
+                    Ok(candidate) => candidate,
+                    Err(err) => {
+                        log::error!("Atlas reload failed ({reason}): {err}");
+                        return;
+                    }
+                };
+                let staged = match stage_scene_textures(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &self.sprite_pipeline,
+                    &self.scene,
+                    &candidate,
+                    &self.animation_registry,
+                ) {
+                    Ok(textures) => textures,
+                    Err(err) => {
+                        log::error!("Atlas reload failed ({reason}): {err}");
+                        return;
+                    }
+                };
+                self.commit_textures(staged);
+                self.multi_atlas = candidate;
                 self.ensure_textures_for_scene();
                 self.rebuild_scene_mesh();
                 log::info!("Atlas reloaded ({reason}): {}", atlas_key);
@@ -423,25 +462,41 @@ impl EngineState {
         }
     }
 
-    fn reload_animation(&mut self, anim_index: usize, reason: &str) {
-        let anim_path = &self.animation_paths[anim_index];
-        match sme_core::animation::load_animation_file(anim_path) {
-            Ok(file) => {
-                // Remove old, add new under its animation_id
-                self.animation_registry.remove_file(&file.animation_id);
-                if let Err(err) = self.animation_registry.load_file(anim_path) {
-                    log::error!("Animation reload failed ({reason}): {err}");
-                    return;
-                }
-                // Reset animation states for affected sprites
-                self.animation_states =
-                    build_animation_states(&self.scene, &self.animation_registry);
-                log::info!("Animation reloaded ({reason}): {}", file.animation_id);
-            }
-            Err(err) => {
+    fn reload_animation(&mut self, _anim_index: usize, reason: &str) {
+        // Rebuild the declared set, so renamed file IDs cannot leave stale clips.
+        let mut candidate = AnimationRegistry::new();
+        for path in &self.animation_paths {
+            if let Err(err) = candidate.load_file(path) {
                 log::error!("Animation reload failed ({reason}): {err}");
+                return;
             }
         }
+        let staged = match stage_scene_textures(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &self.sprite_pipeline,
+            &self.scene,
+            &self.multi_atlas,
+            &candidate,
+        ) {
+            Ok(textures) => textures,
+            Err(err) => {
+                log::error!("Animation reload failed ({reason}): {err}");
+                return;
+            }
+        };
+        self.commit_textures(staged);
+        self.animation_registry = candidate;
+        self.animation_states = build_animation_states(&self.scene, &self.animation_registry);
+        log::info!("Animations reloaded ({reason})");
+    }
+
+    fn commit_textures(&mut self, staged: HashMap<Arc<str>, GpuSpriteTexture>) {
+        // Only generated debug assets survive. Authored pixels are replaced even
+        // when their path is unchanged; removed assets no longer leak cache entries.
+        self.textures
+            .retain(|path, _| path.as_ref() == DEBUG_WHITE_ASSET || path.as_ref() == PLAYER_ASSET);
+        self.textures.extend(staged);
     }
 
     /// Resolve a scene sprite to its atlas entry. Lookup chain:
@@ -852,13 +907,21 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::KeyboardInput { event, .. } if !egui_consumed => {
+            WindowEvent::Focused(focused) => {
+                state.time.reset_elapsed();
+                if !focused {
+                    state.input.cancel_all();
+                    state.paused = true;
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key_code) = event.physical_key {
                     if let Some(engine_key) = map_key(key_code) {
-                        match event.state {
-                            ElementState::Pressed => state.input.key_down(engine_key),
-                            ElementState::Released => state.input.key_up(engine_key),
-                        }
+                        state.input.handle_key(
+                            engine_key,
+                            event.state == ElementState::Pressed,
+                            egui_consumed,
+                        );
                     }
                 }
             }
@@ -873,24 +936,30 @@ impl ApplicationHandler for App {
                 }
 
                 // Fixed-step simulation phase.
-                state.time.begin_frame();
+                if state.paused {
+                    state.time.begin_paused_frame(state.single_step_requested);
+                } else {
+                    state.time.begin_frame();
+                }
                 let mut scene_changed = false;
 
                 // Check for Lua script reload at frame boundary (safe point)
                 state.lua_bridge.check_reload();
-                if state.input.is_just_pressed(Key::R) {
+                let reload_requested = state.input.take_just_pressed(Key::R);
+                if reload_requested {
                     state.lua_bridge.force_reload();
                 }
 
-                while state.time.should_step() {
-                    if state.input.is_just_pressed(Key::Escape) {
+                // Host shortcuts/reload run once per frame, including while paused.
+                {
+                    if state.input.take_just_pressed(Key::Escape) {
                         event_loop.exit();
                         return;
                     }
-                    if state.input.is_just_pressed(Key::F3) {
+                    if state.input.take_just_pressed(Key::F3) {
                         state.debug_overlay.toggle();
                     }
-                    if state.input.is_just_pressed(Key::F4) {
+                    if state.input.take_just_pressed(Key::F4) {
                         state.show_collision_debug = !state.show_collision_debug;
                         scene_changed = true;
                         log::info!(
@@ -902,12 +971,13 @@ impl ApplicationHandler for App {
                             }
                         );
                     }
-                    if state.input.is_just_pressed(Key::F5) {
+                    if state.input.take_just_pressed(Key::F5) {
+                        scene_changed = true;
                         state.tier = state.tier.next();
                         log::info!("Fidelity tier: {}", state.tier);
                     }
 
-                    if state.input.is_just_pressed(Key::R) {
+                    if reload_requested {
                         state.reload_scene("manual trigger (R)");
                         state.reload_collision("manual trigger (R)");
                         for i in 0..state.atlas_paths.len() {
@@ -937,11 +1007,8 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-
-                    // Skip simulation update when paused (unless single-step requested)
-                    if state.paused && !state.single_step_requested {
-                        break;
-                    }
+                }
+                while state.time.should_step() {
                     state.single_step_requested = false;
 
                     // Build input snapshot for Lua
@@ -1050,6 +1117,11 @@ impl ApplicationHandler for App {
 
                     state.camera.position.x = state.character.aabb.center_x;
                     state.camera.position.y = state.character.aabb.center_y;
+                    state.input.end_tick();
+                }
+                // Paused gameplay presses are canceled, not replayed on resume.
+                if state.paused {
+                    state.input.end_tick();
                 }
                 state.time.end_frame();
 
@@ -1094,6 +1166,8 @@ impl ApplicationHandler for App {
                 }
                 if overlay_actions.toggle_pause {
                     state.paused = !state.paused;
+                    state.time.reset_elapsed();
+                    state.input.cancel_all();
                     log::info!(
                         "Simulation {}",
                         if state.paused { "PAUSED" } else { "RESUMED" }
@@ -1205,13 +1279,6 @@ impl ApplicationHandler for App {
 
                 state.gpu.queue.submit(std::iter::once(encoder.finish()));
                 output.present();
-
-                // Only clear edge-triggered input (just_pressed / just_released)
-                // after at least one fixed step consumed it. Otherwise a press
-                // that lands on a frame with 0 simulation steps is silently lost.
-                if state.time.steps_this_frame > 0 {
-                    state.input.end_frame();
-                }
             }
 
             _ => {}
@@ -1328,7 +1395,10 @@ fn load_texture_asset(
             FALLBACK_TEXTURE_BYTES
         }
     };
-    let texture = Texture::from_bytes(device, queue, bytes, asset_path);
+    let texture = Texture::try_from_bytes(device, queue, bytes, asset_path).unwrap_or_else(|err| {
+        log::warn!("{err}; falling back to test sprite");
+        Texture::from_bytes(device, queue, FALLBACK_TEXTURE_BYTES, "fallback")
+    });
     let bind_group = pipeline.create_texture_bind_group(device, &texture);
     GpuSpriteTexture {
         texture,
@@ -1344,12 +1414,51 @@ fn load_texture_asset_strict(
 ) -> Result<GpuSpriteTexture, String> {
     let bytes = std::fs::read(asset_path)
         .map_err(|e| format!("Failed to read texture '{}': {e}", asset_path))?;
-    let texture = Texture::from_bytes(device, queue, &bytes, asset_path);
+    let texture = Texture::try_from_bytes(device, queue, &bytes, asset_path)?;
     let bind_group = pipeline.create_texture_bind_group(device, &texture);
     Ok(GpuSpriteTexture {
         texture,
         bind_group,
     })
+}
+
+fn stage_scene_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &SpritePipeline,
+    scene: &SceneFile,
+    multi_atlas: &MultiAtlasRegistry,
+    animations: &AnimationRegistry,
+) -> Result<HashMap<Arc<str>, GpuSpriteTexture>, String> {
+    validate_scene_sprite_references(scene, multi_atlas)?;
+    animations.validate_sprites(multi_atlas)?;
+    let mut paths = multi_atlas.texture_paths();
+    for sprite in scene.layers.iter().flat_map(|layer| &layer.sprites) {
+        if let Some(name) = &sprite.animation {
+            if animations
+                .resolve_clip(sprite.animation_source.as_deref(), name)
+                .is_none()
+            {
+                return Err(format!(
+                    "Sprite '{}' references missing animation '{name}'",
+                    sprite.id
+                ));
+            }
+        }
+        if sprite.sprite_id.is_none() {
+            if let Some(path) = &sprite.asset {
+                paths.insert(path.clone());
+            }
+        }
+    }
+    let mut staged = HashMap::new();
+    for path in paths {
+        staged.insert(
+            Arc::from(path.as_str()),
+            load_texture_asset_strict(device, queue, pipeline, &path)?,
+        );
+    }
+    Ok(staged)
 }
 
 fn preflight_multi_atlas_textures(

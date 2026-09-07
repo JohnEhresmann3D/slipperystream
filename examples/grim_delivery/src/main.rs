@@ -14,11 +14,10 @@ mod level;
 
 use std::sync::Arc;
 
-use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::Window;
 
 use game::{Game, GameInput, Quad};
 use hud::GameHud;
@@ -190,6 +189,7 @@ impl GameApp {
             let game_input = self.build_game_input();
             self.game
                 .update_fixed(self.time.fixed_dt as f32, game_input);
+            self.input.end_tick();
         }
         self.time.end_frame();
 
@@ -305,65 +305,18 @@ impl GameApp {
                 }
             }
         }
-
-        // Clear edge-triggered input only after a fixed step consumed it,
-        // mirroring the engine's input-loss guard.
-        if self.time.steps_this_frame > 0 {
-            self.input.end_frame();
-        }
     }
 }
 
-struct App {
-    config: PlatformConfig,
-    state: Option<GameApp>,
-    /// Route for the wasm path: GPU init completes in a spawned future and
-    /// delivers the finished `GameApp` back to the loop as a user event.
-    /// Unused on native, where init happens synchronously in `resumed`.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    proxy: EventLoopProxy<GameApp>,
-    /// Guards against `resumed` firing more than once while async init is
-    /// still in flight on wasm.
-    init_started: bool,
-}
-
-impl ApplicationHandler<GameApp> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() || self.init_started {
-            return;
-        }
-        self.init_started = true;
-        let window = sme_platform::window::create_window(event_loop, &self.config);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.state = Some(pollster::block_on(GameApp::new(window)));
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let proxy = self.proxy.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let app = GameApp::new(window).await;
-                let _ = proxy.send_event(app);
-            });
-        }
+impl sme_platform::app::GameHost for GameApp {
+    async fn create(window: Arc<Window>) -> Self {
+        Self::new(window).await
     }
-
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, app: GameApp) {
-        app.window.request_redraw();
-        self.state = Some(app);
+    fn window(&self) -> &Window {
+        &self.window
     }
-
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state {
-            state.window.request_redraw();
-        }
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(state) = self.state.as_mut() else {
-            return;
-        };
+    fn event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        let state = self;
         let egui_consumed = state.hud.handle_window_event(&state.window, &event);
 
         match event {
@@ -374,13 +327,20 @@ impl ApplicationHandler<GameApp> for App {
                     state.camera.viewport = (size.width, size.height);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } if !egui_consumed => {
+            WindowEvent::Focused(focused) => {
+                state.time.reset_elapsed();
+                if !focused {
+                    state.input.cancel_all();
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key_code) = event.physical_key {
                     if let Some(engine_key) = map_key(key_code) {
-                        match event.state {
-                            ElementState::Pressed => state.input.key_down(engine_key),
-                            ElementState::Released => state.input.key_up(engine_key),
-                        }
+                        state.input.handle_key(
+                            engine_key,
+                            event.state == ElementState::Pressed,
+                            egui_consumed,
+                        );
                     }
                 }
             }
@@ -435,32 +395,10 @@ fn main() {
     }
     log::info!("GRIM DELIVERY — clocking in.");
 
-    let event_loop = EventLoop::<GameApp>::with_user_event()
-        .build()
-        .expect("Failed to create event loop");
-    event_loop.set_control_flow(ControlFlow::Poll);
-
-    let app = App {
-        config: PlatformConfig {
-            title: "GRIM DELIVERY — Grim Delivery Co. Route Client v0.1".to_string(),
-            width: 1280,
-            height: 720,
-        },
-        state: None,
-        proxy: event_loop.create_proxy(),
-        init_started: false,
-    };
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut app = app;
-        event_loop.run_app(&mut app).expect("Event loop error");
-    }
-    // On the web the loop must not block; spawn_app hands control to the
-    // browser and drives frames via requestAnimationFrame.
-    #[cfg(target_arch = "wasm32")]
-    {
-        use winit::platform::web::EventLoopExtWebSys;
-        event_loop.spawn_app(app);
-    }
+    sme_platform::app::run::<GameApp>(PlatformConfig {
+        title: "GRIM DELIVERY — Grim Delivery Co. Route Client v0.1".to_string(),
+        width: 1280,
+        height: 720,
+    })
+    .expect("Event loop error");
 }
